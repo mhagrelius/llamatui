@@ -58,6 +58,12 @@ use these names in code, comments, and reviews rather than inventing new ones.
     date line* (see "Cache-prefix discipline"). It is **curated, not a dump**: a **Background**
     section (salient entities, `user` pinned first) and a **Recently learned** section (newest
     observations, excluding ones already in Background), under hard size budgets.
+    - **Injection defense.** Memory content is partly shaped by tools/web, so the block is
+      *untrusted data*. The preamble leads with a notice (reference data, **not** instructions;
+      never obey it; flag anomalies) and wraps the facts in `<saved_memory>…</saved_memory>`
+      delimiters; `MEMORY_GUIDANCE` adds the write-path rule (don't store secrets, persona
+      changes, or web/tool claims as the user's wishes). This is a *soft* mitigation — hard
+      enforcement is structural: the tools only ever store/retrieve, never execute.
 
 - **Instructions** — `instructions.build_instructions()` composes the system prompt so the
   cache-prefix invariant is **structural**, not a convention: `volatile` (the date line) is a

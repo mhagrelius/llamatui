@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS observations (
     entity_id  INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
     content    TEXT    NOT NULL,
     embedding  BLOB,                       -- nullable; little-endian float32 vector cache
+    pinned     INTEGER NOT NULL DEFAULT 0, -- 1 = always surface in the ambient preamble
     created_at TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_observations_entity ON observations(entity_id, id);
@@ -61,6 +62,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
 # rather than the nearest-but-irrelevant memory; BM25 hits are always a real lexical match.
 _SEM_FLOOR = 0.35
 _RRF_K = 60
+# Recall caps: a heavily-loaded entity (e.g. the user, with dozens of facts) must not dump its
+# whole profile on every query. A hit carries only the observations that matched, plus a bounded
+# slice of its relations for context.
+_HIT_OBS = 6
+_HIT_RELS = 8
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
@@ -88,6 +94,7 @@ class Entity:
 class Recent:
     entity: str
     content: str
+    type: str | None = None
 
 
 @dataclass
@@ -170,7 +177,14 @@ class KnowledgeGraph:
         self.db = conn
         self._embedder = embedder
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.db.commit()
+
+    def _migrate(self) -> None:
+        # Add columns introduced after a DB was first created (CREATE IF NOT EXISTS won't).
+        cols = [r["name"] for r in self.db.execute("PRAGMA table_info(observations)").fetchall()]
+        if "pinned" not in cols:
+            self.db.execute("ALTER TABLE observations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
 
     # ---- writing ---------------------------------------------------------
     def observe(
@@ -181,12 +195,19 @@ class KnowledgeGraph:
         subject_type: str | None = None,
         related_to: str | None = None,
         relation: str | None = None,
+        pin: bool = False,
     ) -> Observed:
         """Record a fact about ``subject`` (auto-creating it), optionally linking it to another
-        entity. Dedupes identical facts; caches an embedding when an embedder is attached."""
+        entity. Dedupes identical facts; caches an embedding when an embedder is attached.
+
+        ``pin=True`` marks the fact *core*, so it always surfaces in the ambient preamble — even
+        for a fact already stored (it just flips the flag)."""
         eid = self._upsert_entity(subject, subject_type)
-        oid = self._add_observation(eid, content)
-        if oid is not None and self._embedder is not None:
+        oid, created = self._add_observation(eid, content)
+        if oid is not None and pin:
+            self.db.execute("UPDATE observations SET pinned = 1 WHERE id = ?", (oid,))
+            self.db.commit()
+        if created and self._embedder is not None:
             try:
                 self._set_embedding(oid, _pack(self._embedder.embed([content])[0]))
             except Exception:
@@ -196,7 +217,27 @@ class KnowledgeGraph:
             tid = self._upsert_entity(related_to)
             self._add_relation(eid, tid, (relation or "related-to").strip())
             related = True
-        return Observed(added=oid is not None, related=related)
+        return Observed(added=created, related=related)
+
+    def pin(self, entity_name: str, contains: str | None = None) -> int:
+        """Mark existing facts core. All of an entity's observations, or only those whose content
+        matches ``contains``. Returns how many were pinned."""
+        row = self.db.execute(
+            "SELECT id FROM entities WHERE name = ? COLLATE NOCASE", (entity_name.strip(),)
+        ).fetchone()
+        if row is None:
+            return 0
+        if contains:
+            cur = self.db.execute(
+                "UPDATE observations SET pinned = 1 WHERE entity_id = ? AND content LIKE ?",
+                (row["id"], f"%{contains}%"),
+            )
+        else:
+            cur = self.db.execute(
+                "UPDATE observations SET pinned = 1 WHERE entity_id = ?", (row["id"],)
+            )
+        self.db.commit()
+        return cur.rowcount
 
     def forget(self, query: str) -> Forgotten:
         """Drop a whole entity when ``query`` is its exact name, else remove matching facts."""
@@ -235,12 +276,16 @@ class KnowledgeGraph:
 
     # ---- reading ---------------------------------------------------------
     def search(self, query: str, limit: int = 5) -> list[Entity]:
-        """Top entities for a query via keyword(BM25) + semantic, fused with RRF."""
+        """Top entities for a query via keyword(BM25) + semantic, fused with RRF.
+
+        Each returned :class:`Entity` carries only the observations that *matched* (capped),
+        not its full profile — so recalling against the user doesn't dump 30 facts every time.
+        """
         wide = limit * 4
         keyword = self._keyword_search(query, limit=wide)
         semantic = self._semantic_search(query, limit=wide)
         fused = _rrf([keyword, semantic]) if semantic else keyword
-        return self._hydrate(fused)[:limit]
+        return self._hits(fused, limit)
 
     def salient(self, limit: int = 8) -> list[Entity]:
         """Entities ranked by salience = observation_count + relation_degree, then recency."""
@@ -261,11 +306,11 @@ class KnowledgeGraph:
     def recent(self, limit: int = 10) -> list[Recent]:
         """Newest observations across all entities."""
         rows = self.db.execute(
-            "SELECT o.content, e.name AS entity FROM observations o"
+            "SELECT o.content, e.name AS entity, e.type FROM observations o"
             " JOIN entities e ON e.id = o.entity_id ORDER BY o.id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        return [Recent(entity=r["entity"], content=r["content"]) for r in rows]
+        return [Recent(entity=r["entity"], content=r["content"], type=r["type"]) for r in rows]
 
     def get(self, name: str) -> Entity | None:
         row = self.db.execute(
@@ -296,14 +341,16 @@ class KnowledgeGraph:
         self.db.commit()
         return int(cur.lastrowid)
 
-    def _add_observation(self, entity_id: int, content: str) -> int | None:
+    def _add_observation(self, entity_id: int, content: str) -> tuple[int | None, bool]:
+        """Insert a fact (or find the existing dup). Returns (observation_id, created)."""
         content = content.strip()
         if not content:
-            return None
-        if self.db.execute(
-            "SELECT 1 FROM observations WHERE entity_id = ? AND content = ?", (entity_id, content)
-        ).fetchone() is not None:
-            return None
+            return (None, False)
+        existing = self.db.execute(
+            "SELECT id FROM observations WHERE entity_id = ? AND content = ?", (entity_id, content)
+        ).fetchone()
+        if existing is not None:
+            return (int(existing["id"]), False)
         name = self.db.execute(
             "SELECT name FROM entities WHERE id = ?", (entity_id,)
         ).fetchone()["name"]
@@ -317,7 +364,24 @@ class KnowledgeGraph:
             (oid, content, name),
         )
         self.db.commit()
-        return oid
+        return (oid, True)
+
+    def pinned(self, limit: int = 12) -> list[Recent]:
+        """Core (pinned) facts, most salient entity first — the always-on ambient context."""
+        rows = self.db.execute(
+            """
+            SELECT e.name AS entity, o.content,
+                   (SELECT COUNT(*) FROM observations o2 WHERE o2.entity_id = e.id)
+                 + (SELECT COUNT(*) FROM relations r WHERE r.from_id = e.id OR r.to_id = e.id)
+                   AS salience
+            FROM observations o JOIN entities e ON e.id = o.entity_id
+            WHERE o.pinned = 1
+            ORDER BY salience DESC, o.id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [Recent(entity=r["entity"], content=r["content"]) for r in rows]
 
     def _add_relation(self, from_id: int, to_id: int, type: str) -> None:
         if from_id == to_id or not type:
@@ -378,19 +442,30 @@ class KnowledgeGraph:
         scored.sort(key=lambda t: t[1], reverse=True)
         return [oid for oid, _ in scored[:limit]]
 
-    def _hydrate(self, obs_ids: list[int]) -> list[Entity]:
-        """Map a ranked observation-id list to entities, rank-preserving and deduped."""
-        out: list[Entity] = []
-        seen: set[int] = set()
+    def _hits(self, obs_ids: list[int], limit: int) -> list[Entity]:
+        """Group ranked matched observations by entity (rank-preserving), and return each entity
+        carrying only those matched observations (capped) plus a bounded slice of its relations."""
+        matched: dict[int, list[str]] = {}
+        order: list[int] = []
         for oid in obs_ids:
             row = self.db.execute(
-                "SELECT entity_id FROM observations WHERE id = ?", (oid,)
+                "SELECT entity_id, content FROM observations WHERE id = ?", (oid,)
             ).fetchone()
-            if row is None or row["entity_id"] in seen:
+            if row is None:
                 continue
-            seen.add(row["entity_id"])
-            out.append(self._entity(row["entity_id"]))
-        return out
+            eid = row["entity_id"]
+            if eid not in matched:
+                matched[eid] = []
+                order.append(eid)
+            if row["content"] not in matched[eid]:
+                matched[eid].append(row["content"])
+        hits: list[Entity] = []
+        for eid in order[:limit]:
+            e = self._entity(eid)
+            e.observations = matched[eid][:_HIT_OBS]   # only the facts that matched the query
+            e.relations = e.relations[:_HIT_RELS]
+            hits.append(e)
+        return hits
 
     def _entity(self, entity_id: int) -> Entity:
         erow = self.db.execute(

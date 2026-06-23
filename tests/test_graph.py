@@ -64,6 +64,17 @@ def test_search_keyword_only(tmp_path):
     assert g.search("nonexistent") == []
 
 
+def test_search_returns_only_matched_observations(tmp_path):
+    g = _graph(tmp_path)
+    # An entity loaded with many facts must not dump its whole profile on a narrow query.
+    g.observe("user", "plays Destiny 2")
+    for i in range(10):
+        g.observe("user", f"unrelated work fact {i}")
+    hit = g.search("Destiny")[0]
+    assert hit.name == "user"
+    assert hit.observations == ["plays Destiny 2"]   # just the match, not all 11 facts
+
+
 def test_search_semantic_paraphrase_and_floor(tmp_path):
     g = KnowledgeGraph(connect(tmp_path / "g.db"), embedder=FakeEmbedder())
     g.observe("bob", "adores spicy cuisine", subject_type="person")
@@ -103,3 +114,30 @@ def test_forget(tmp_path):
 
 def test_rrf_fuses_rankings():
     assert _rrf([[3, 1, 2], [1, 4]])[0] == 1
+
+
+# ---- pinning ----------------------------------------------------------------------------
+def test_pin_via_observe(tmp_path):
+    g = _graph(tmp_path)
+    g.observe("user", "avoids chicken eggs", pin=True)
+    g.observe("user", "likes blue")  # not pinned
+    assert [p.content for p in g.pinned()] == ["avoids chicken eggs"]
+
+
+def test_pin_existing_by_substring(tmp_path):
+    g = _graph(tmp_path)
+    g.observe("user", "avoids sunflower oil")
+    g.observe("user", "plays games")
+    assert g.pin("user", "sunflower") == 1
+    assert [p.content for p in g.pinned()] == ["avoids sunflower oil"]
+    assert g.pin("nobody") == 0          # unknown entity
+
+
+def test_pinned_orders_salient_entity_first(tmp_path):
+    g = _graph(tmp_path)
+    g.observe("condition", "minor note", pin=True)
+    for i in range(3):
+        g.observe("user", f"fact {i}")    # make user more salient
+    g.observe("user", "core user fact", pin=True)
+    # user (more observations) outranks the condition entity
+    assert g.pinned()[0].entity == "user"
