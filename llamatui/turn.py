@@ -27,6 +27,12 @@ WRITING = "writing"
 
 _QUERY_RE = re.compile(r'"query"\s*:\s*"([^"]*)"')
 
+# A model may leak a tool call into its answer as plain text (e.g. "<tool_call><function=
+# remember>...") instead of a structured call. That never executes, so strip it from the
+# visible/persisted answer. Match whole blocks first, then any leftover stray tags.
+_TOOL_BLOCK_RE = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL | re.IGNORECASE)
+_TOOL_TAG_RE = re.compile(r"</?tool_call\s*>|</?function[^>]*>|</?parameter[^>]*>", re.IGNORECASE)
+
 
 def extract_query(args: str) -> str | None:
     """Pull a ``"query"`` value out of a (possibly partial) tool-call argument blob.
@@ -38,6 +44,40 @@ def extract_query(args: str) -> str | None:
     return m.group(1) if m else None
 
 
+def strip_tool_noise(text: str) -> str:
+    """Remove tool-call markup a model leaked into answer text (it never ran)."""
+    if "<tool_call" not in text and "<function=" not in text and "<parameter=" not in text:
+        return text
+    text = _TOOL_BLOCK_RE.sub("", text)
+    text = _TOOL_TAG_RE.sub("", text)
+    return text.strip()
+
+
+def _stringify_result(res: Any) -> str | None:
+    if res is None or isinstance(res, str):
+        return res
+    text = getattr(res, "text", None)
+    if isinstance(text, str):
+        return text
+    if isinstance(res, (list, tuple)):
+        parts = [r if isinstance(r, str) else getattr(r, "text", None) for r in res]
+        joined = " ".join(p for p in parts if isinstance(p, str))
+        if joined:
+            return joined
+    return str(res)
+
+
+def _result_text(c: Any) -> tuple[str | None, bool]:
+    """Pull a (text, failed) pair off a function_result content."""
+    exc = getattr(c, "exception", None)
+    if exc:
+        return (f"failed: {exc}", True)
+    res = getattr(c, "result", None)
+    if res is None:
+        res = getattr(c, "output", None)
+    return (_stringify_result(res), False)
+
+
 @dataclass
 class ToolCall:
     """One tool invocation the model made during the turn."""
@@ -46,6 +86,8 @@ class ToolCall:
     name: str
     args: str = ""
     done: bool = False
+    result: str | None = None   # the tool's returned text, surfaced so "done" can't lie
+    failed: bool = False
 
     @property
     def query(self) -> str | None:
@@ -133,6 +175,7 @@ class TurnStream:
             call = self._calls.get(cid) if cid else None
             if call is not None:
                 call.done = True
+                call.result, call.failed = _result_text(c)
         elif ctype == "usage":
             self.state.usage_details = getattr(c, "usage_details", None)
             self.state.timings = _extract_timings(c)

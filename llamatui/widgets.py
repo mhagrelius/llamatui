@@ -65,11 +65,15 @@ class AssistantTurn(Vertical):
         line.tool_call_id = call_id  # type: ignore[attr-defined]
         self.query_one("#tools", Vertical).mount(line)
 
-    def update_tool(self, call_id: str, label: str, done: bool = False) -> None:
+    def update_tool(self, call_id: str, label: str, done: bool = False, failed: bool = False) -> None:
         for line in self.query(".tool-call"):
             if getattr(line, "tool_call_id", None) == call_id:
-                mark = "✓" if done else "🔎"
-                style = "green" if done else "cyan"
+                if failed:
+                    mark, style = "⚠", "yellow"
+                elif done:
+                    mark, style = "✓", "green"
+                else:
+                    mark, style = "🔎", "cyan"
                 line.update(Text(f"{mark} {label}", style=style))
                 return
 

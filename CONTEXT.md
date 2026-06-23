@@ -18,8 +18,12 @@ use these names in code, comments, and reviews rather than inventing new ones.
   invariant is enforced in two cooperating places: the **Conversation** (what enters history)
   and the chat client (what is sent on the wire, `client._prepare_message_for_openai`).
 
-- **Tool call** — a model-initiated invocation of a remote tool (today: Exa web search via
-  MCP). Represented by `turn.ToolCall` (name, streamed args, done flag, parsed `query`).
+- **Tool call** — a model-initiated invocation of a tool (Exa web search via MCP, or the
+  in-process memory tools). Represented by `turn.ToolCall` (name, streamed args, done flag,
+  parsed `query`, and the captured `result`/`failed`). The UI surfaces the actual result on the
+  chip so "done" can't mask a no-op or error. A small local model sometimes *leaks* a tool call
+  into its answer as plain text (`<tool_call><function=…>`); `strip_tool_noise` removes that from
+  the shown and persisted answer, since it never executed.
 
 - **Conversation** — the single source of truth for an ongoing chat: the in-memory list of
   agent-facing **Messages** *and* its SQLite persistence, kept coherent behind one interface

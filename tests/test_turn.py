@@ -5,7 +5,14 @@ No App, no server: we feed recorded-shaped update objects and assert the resulti
 
 from types import SimpleNamespace
 
-from llamatui.turn import SEARCHING, THINKING, WRITING, TurnStream, extract_query
+from llamatui.turn import (
+    SEARCHING,
+    THINKING,
+    WRITING,
+    TurnStream,
+    extract_query,
+    strip_tool_noise,
+)
 
 
 class FakeClock:
@@ -92,6 +99,34 @@ def test_usage_falls_back_to_model_extra_for_timings():
     raw = SimpleNamespace(model_extra={"timings": {"prompt_per_second": 2600.0}})
     s.ingest(update(content(type="usage", usage_details={}, raw_representation=raw)))
     assert s.state.timings == {"prompt_per_second": 2600.0}
+
+
+def test_function_result_captures_text_and_failure():
+    s = TurnStream()
+    s.ingest(update(content(type="function_call", name="remember", call_id="c1", arguments='{"content":"x"}')))
+    s.ingest(update(content(type="function_result", call_id="c1", result="Noted about user.")))
+    call = s.state.tool_calls[0]
+    assert call.done and call.result == "Noted about user." and call.failed is False
+
+    s2 = TurnStream()
+    s2.ingest(update(content(type="function_call", name="remember", call_id="c2", arguments="{}")))
+    s2.ingest(update(content(type="function_result", call_id="c2", exception="missing 'content'")))
+    bad = s2.state.tool_calls[0]
+    assert bad.done and bad.failed and "missing" in bad.result
+
+
+def test_strip_tool_noise_removes_leaked_calls():
+    # A model leaked a whole tool call into the answer text; it should vanish.
+    leaked = (
+        "Sure, saving that now.\n"
+        "<tool_call> <function=remember> <parameter=content> Favorite games: Elden Ring "
+        "<parameter=subject> Matt </tool_call>"
+    )
+    assert strip_tool_noise(leaked) == "Sure, saving that now."
+    # Stray opening tags without a close still get stripped.
+    assert "<function=" not in strip_tool_noise("hi <function=remember> there")
+    # Plain prose is untouched (and fast-pathed).
+    assert strip_tool_noise("no markup at all") == "no markup at all"
 
 
 def test_extract_query_tolerates_partial_json():
