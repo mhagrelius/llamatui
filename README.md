@@ -20,14 +20,20 @@ experience, but pointed entirely at hardware you own.
 
 - **Totally local by default.** The only thing that ever leaves your machine is a web search
   query — and only if you enable the tool and the model decides to use it.
+- **It remembers you.** A persistent, local **knowledge graph** (entities, facts, and how they
+  relate) that the assistant builds about you across conversations — surfaced both as ambient
+  context and via tools it calls itself. No server, no cloud; it lives in the same SQLite file
+  as your chats.
 - **Thinking vs. answer, separated.** llama.cpp streams a model's reasoning in a non-standard
   `reasoning_content` field; a small client subclass surfaces it so the TUI can show thinking
   distinctly from the final answer (and never replays it back into context).
 - **Real metrics.** It reads llama.cpp's native `timings` block for true prefill/generation
   throughput and speculative-decode acceptance, not just wall-clock guesses.
-- **Deep, testable modules.** The streaming state machine (`TurnStream`) and the
-  conversation/persistence layer (`Conversation`) are isolated behind narrow interfaces, so
-  the tricky logic is unit-tested with no server and no UI. See [`CONTEXT.md`](CONTEXT.md).
+- **Deep, testable modules.** The streaming state machine (`TurnStream`), the
+  conversation/persistence layer (`Conversation`), and the memory knowledge-graph
+  (`KnowledgeGraph`, with a thin `Memory` surface over it) are isolated behind narrow
+  interfaces, so the tricky logic — including hybrid keyword+semantic recall — is unit-tested
+  with no server and no UI. See [`CONTEXT.md`](CONTEXT.md).
 
 ## Prerequisites
 
@@ -59,6 +65,30 @@ export EXA_API_KEY=your_key   # PowerShell: $env:EXA_API_KEY = "your_key"
 ```
 
 Disable it entirely with `--no-web`.
+
+### Memory
+
+The assistant keeps a small, local **knowledge graph** about you — *entities* (people,
+projects, preferences…), *facts* about them, and *relationships* between them — so it can carry
+context across conversations instead of starting cold every time. It shows up two ways:
+
+- **Ambient context.** A curated summary is injected into its system prompt each conversation —
+  a **Background** section (the enduring, salient things) and a **Recently learned** section
+  (what changed lately). It sits just above the date line so the rest of the prompt stays cache-
+  friendly.
+- **Tools it calls itself.** `remember` (save a durable fact, optionally linking two things),
+  `recall` (look something up), and `forget` (drop something).
+
+`recall` is **hybrid search**: keyword (SQLite FTS5/BM25) plus optional **semantic** search,
+fused with Reciprocal Rank Fusion so paraphrases match too. Semantic search is an optional
+extra — it runs a small embedding model **in-process** (no server):
+
+```sh
+uv sync --extra semantic    # pulls fastembed; first recall downloads a small model once
+```
+
+Without it, recall is keyword-only. Everything is stored right in your conversations database;
+nothing leaves the machine. Disable memory entirely with `--no-memory`.
 
 ### Where conversations are stored
 
@@ -97,8 +127,10 @@ uv sync --dev
 uv run pytest
 ```
 
-The unit tests exercise `TurnStream` (feed recorded stream updates, assert the parsed turn)
-and `Conversation` (round-trip through a temp SQLite file) — no llama-server required.
+The unit tests exercise `TurnStream` (feed recorded stream updates, assert the parsed turn),
+`Conversation` (round-trip through a temp SQLite file), `KnowledgeGraph` (writing, hybrid recall
+with a fake embedder, scoring, forget), `Memory` (tool wording + the ambient preamble), and the
+instructions builder — no llama-server, and no `fastembed`, required.
 
 ## Why
 

@@ -4,11 +4,11 @@ Everything here runs against a throwaway SQLite file — no Textual, no server.
 """
 
 from llamatui.conversation import Conversation
-from llamatui.storage import Store
+from llamatui.storage import Store, connect
 
 
 def _store(tmp_path):
-    return Store(tmp_path / "conversations.db")
+    return Store(connect(tmp_path / "conversations.db"))
 
 
 def test_exchange_round_trips_through_storage(tmp_path):

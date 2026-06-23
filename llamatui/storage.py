@@ -3,6 +3,10 @@
 A single file under the user data dir holds every conversation so they survive restarts.
 Messages keep the answer, the thinking, and a small JSON metrics blob so a reloaded turn
 looks like it did live.
+
+The knowledge-graph half of the database lives in its own deep module
+(:class:`~llamatui.graph.KnowledgeGraph`); both share one connection opened by :func:`connect`.
+``Store`` owns only conversations and messages.
 """
 
 from __future__ import annotations
@@ -46,12 +50,23 @@ def default_db_path() -> Path:
     return d / "conversations.db"
 
 
+def connect(path: Path | str | None = None) -> sqlite3.Connection:
+    """Open the single shared connection used by both ``Store`` and ``KnowledgeGraph``.
+
+    One connection, one file, accessed from the main thread — so the two modules can each own
+    their own tables without a second connection or cross-thread locking.
+    """
+    conn = sqlite3.connect(Path(path) if path else default_db_path())
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
 class Store:
-    def __init__(self, path: Path | str | None = None) -> None:
-        self.path = Path(path) if path else default_db_path()
-        self.db = sqlite3.connect(self.path)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA foreign_keys = ON")
+    """Conversations and messages only. Takes the shared connection from :func:`connect`."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.db = conn
         self.db.executescript(SCHEMA)
         self.db.commit()
 

@@ -12,6 +12,11 @@ dependencies = [
     "textual>=0.86",
 ]
 
+[project.optional-dependencies]
+# Semantic recall (in-process embeddings via fastembed). Optional: without it, memory recall
+# is keyword-only (FTS5/BM25). Install with `uv sync --extra semantic`.
+semantic = ["fastembed>=0.3"]
+
 [project.scripts]
 llamatui = "llamatui.__main__:main"
 

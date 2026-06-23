@@ -20,6 +20,7 @@ def main() -> None:
     ap.add_argument("--top-p", type=float, default=None, help="nucleus sampling probability")
     ap.add_argument("--db", default=None, help="path to the conversations SQLite file")
     ap.add_argument("--no-web", action="store_true", help="disable the Exa web-search tool")
+    ap.add_argument("--no-memory", action="store_true", help="disable the persistent memory tool")
     args = ap.parse_args()
 
     base_url = args.url.rstrip("/")
@@ -35,6 +36,7 @@ def main() -> None:
         top_p=args.top_p,
         db_path=args.db,
         web=not args.no_web,
+        memory=not args.no_memory,
     )
     LlamaTUI(config).run()
 

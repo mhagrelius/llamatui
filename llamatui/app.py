@@ -27,7 +27,10 @@ from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 from . import metrics as M
 from .client import build_agent, detect_context_window, detect_model_id
 from .conversation import Conversation
-from .storage import Store
+from .graph import KnowledgeGraph, build_embedder
+from .instructions import build_instructions
+from .memory import Memory
+from .storage import Store, connect
 from .tools import build_exa_tool, exa_key_present
 from .turn import WRITING, TurnStream
 from .widgets import AssistantTurn, PromptArea, StatusBar, UserTurn
@@ -63,6 +66,16 @@ WEB_SEARCH_GUIDANCE = (
     "directly without searching."
 )
 
+MEMORY_GUIDANCE = (
+    "You have a persistent memory that survives across conversations. Use the 'remember' tool to "
+    "save durable facts about the user and their world as they emerge — preferences, ongoing "
+    "projects, people, decisions, and how things relate (pass related_to/relation to link them). "
+    "Use 'recall' to look something up before answering questions about the user when it isn't "
+    "already in the summary below, and 'forget' to remove things they ask you to drop. Save only "
+    "lasting facts, not throwaway details, and don't re-save something already shown below. A "
+    "summary of what you currently know is included as context."
+)
+
 
 def _date_line() -> str:
     # Kept last in the system prompt: it's the only volatile part, so the stable instruction
@@ -75,7 +88,10 @@ RENDER_INTERVAL = 0.06
 
 
 class Config:
-    def __init__(self, url, model, system, temperature, max_tokens, top_p, db_path=None, web=True):
+    def __init__(
+        self, url, model, system, temperature, max_tokens, top_p,
+        db_path=None, web=True, memory=True,
+    ):
         self.url = url
         self.model = model
         self.system = system
@@ -84,6 +100,7 @@ class Config:
         self.top_p = top_p
         self.db_path = db_path
         self.web = web
+        self.memory = memory
 
 
 class LlamaTUI(App):
@@ -111,6 +128,7 @@ class LlamaTUI(App):
         self.conversation: Conversation | None = None
         self.web_tool = None
         self.web_enabled = False
+        self.memory: Memory | None = None
 
     # ---- setup -----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -126,7 +144,9 @@ class LlamaTUI(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        self.store = Store(self.config.db_path)
+        # One shared connection: Store owns conversations, KnowledgeGraph owns the graph.
+        conn = connect(self.config.db_path)
+        self.store = Store(conn)
         detected = detect_model_id(self.config.url)
         if detected:
             self.config.model = detected
@@ -145,6 +165,12 @@ class LlamaTUI(App):
             except Exception:
                 self.web_enabled = False
 
+        if self.config.memory:
+            # Keyword recall + the ambient block work immediately; semantic recall upgrades in
+            # place once the (optional) embedding model finishes loading off the event loop.
+            self.memory = Memory(KnowledgeGraph(conn))
+            self._load_embedder()
+
         self._rebuild_agent()
         self._refresh_sidebar()
         self.query_one("#prompt", PromptArea).focus()
@@ -154,10 +180,11 @@ class LlamaTUI(App):
             if self.web_enabled
             else "web search [b]off[/]"
         )
+        mem = f"memory [b]{'on' if self.memory is not None else 'off'}[/]"
         self._write_system(
             f"Connected to [b]{self.config.url}[/]  ·  model [b]{self.model_label}[/]"
             + (f"  ·  ctx {self.context_window:,}" if self.context_window else "")
-            + f"  ·  {web}"
+            + f"  ·  {web}  ·  {mem}"
             + "\nType a message, or [cyan]/help[/] for commands."
         )
         self._status("ready", connected=connected)
@@ -171,13 +198,37 @@ class LlamaTUI(App):
         if self.store is not None:
             self.store.close()
 
+    @work(thread=True, group="embedder")
+    def _load_embedder(self) -> None:
+        # Build the (optional, slow-to-load) embedder OFF the event loop — but it must not touch
+        # SQLite here: the connection lives on the main thread. So we only load, then hand it back.
+        embedder = build_embedder()
+        if embedder is not None:
+            self.call_from_thread(self._attach_embedder, embedder)
+
+    def _attach_embedder(self, embedder) -> None:
+        # Runs on the main thread (writes SQLite during backfill). One public seam, no internals.
+        if self.memory is not None:
+            self.memory.attach_embedder(embedder)
+
     def _rebuild_agent(self) -> None:
-        # persona (custom or default), then capability guidance, then the volatile date LAST
-        parts = [self.conversation.system_prompt or DEFAULT_SYSTEM]
+        capabilities: list[str] = []
+        tools: list = []
         if self.web_enabled:
-            parts.append(WEB_SEARCH_GUIDANCE)
-        parts.append(_date_line())
-        instructions = "\n\n".join(parts)
+            capabilities.append(WEB_SEARCH_GUIDANCE)
+            tools.append(self.web_tool)
+        ambient = None
+        if self.memory is not None:
+            capabilities.append(MEMORY_GUIDANCE)
+            tools.extend(self.memory.build_tools())
+            ambient = self.memory.preamble()
+        # The builder guarantees the volatile date line lands last (cache-prefix invariant).
+        instructions = build_instructions(
+            persona=self.conversation.system_prompt or DEFAULT_SYSTEM,
+            capabilities=capabilities,
+            ambient=ambient,
+            volatile=_date_line(),
+        )
         self.agent = build_agent(
             base_url=self.config.url,
             model=self.config.model,
@@ -185,7 +236,7 @@ class LlamaTUI(App):
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
             top_p=self.config.top_p,
-            tools=self.web_tool if self.web_enabled else None,
+            tools=tools or None,
         )
 
     # ---- helpers ---------------------------------------------------------
@@ -378,6 +429,7 @@ class LlamaTUI(App):
         self._busy = False
         if self.conversation is not None:
             self.conversation.new(self.conversation.system_prompt)
+        self._rebuild_agent()  # refresh the ambient memory block for the fresh conversation
         for child in list(self.transcript.children):
             child.remove()
         self._refresh_sidebar()

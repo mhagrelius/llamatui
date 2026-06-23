@@ -31,9 +31,53 @@ use these names in code, comments, and reviews rather than inventing new ones.
   usage + llama.cpp timings + wall-clock into one `TurnMetrics`; `format_oneline()` is its
   interface.
 
+- **KnowledgeGraph** — the deep module (`graph.py`) that owns *everything about facts the
+  assistant knows*: the *entities* (people/projects/preferences/…), *observations* (timestamped
+  facts), and *relations* (typed edges) tables, plus the FTS5 keyword index, the embedding
+  vector cache, salience scoring, hydration, and **hybrid retrieval**. Forgiving validation
+  (case-insensitive names, free-text types). Callers talk to it by *intent* — `observe`,
+  `search`, `salient`, `recent`, `forget`, `attach_embedder` — **never in SQL**; that narrow
+  interface is the test surface (`tests/test_graph.py`). It shares one SQLite connection (from
+  `storage.connect()`) with the **Store**, but owns its own tables; `Store` is now conversations
+  only.
+  - **Recall is hybrid**: FTS5/**BM25** keyword search fused with **semantic** (embedding)
+    search via **Reciprocal Rank Fusion**, with a cosine floor so off-topic queries return
+    nothing. The embedder is an *injectable seam* — the `Embedder` protocol + `build_embedder()`
+    feature-detect the optional `fastembed` package and return `None` when absent (recall
+    degrades to keyword-only). `attach_embedder()` is the **one public seam** for the whole
+    embedding lifecycle (set + backfill); nothing reaches into graph internals.
+
+- **Memory** — the *surface* (`memory.py`), a **thin wrapper** over the KnowledgeGraph. It owns
+  only how the graph is presented to the model:
+  - **Tools** the model calls itself — `remember` / `recall` / `forget` as Agent Framework
+    `FunctionTool`s. Relations are *folded into* `remember` (`related_to` + `relation`) so a
+    local model has fewer tools to juggle. This is the second tool *shape* in the app: contrast
+    **remote MCP** (Exa web search, over HTTP, `tools.py`) with **in-process function tools**
+    (memory, over the graph).
+  - **`preamble()`** — an ambient context block spliced into the system prompt *just above the
+    date line* (see "Cache-prefix discipline"). It is **curated, not a dump**: a **Background**
+    section (salient entities, `user` pinned first) and a **Recently learned** section (newest
+    observations, excluding ones already in Background), under hard size budgets.
+
+- **Instructions** — `instructions.build_instructions()` composes the system prompt so the
+  cache-prefix invariant is **structural**, not a convention: `volatile` (the date line) is a
+  distinct, always-last slot; stable parts (persona → capability guidance → ambient memory
+  block) precede it by construction. Tested as a property in `tests/test_instructions.py`.
+
 ## Architecture stance
 
 The Textual `App` (`app.py`) is a **thin adapter**: it wires widgets, keybindings, and the
-streaming worker, but delegates the two genuinely complex jobs to deep modules — `TurnStream`
-(interpret the stream) and `Conversation` (own history + persistence). The interface of each
-deep module is its test surface; see `tests/`.
+streaming worker, but delegates the genuinely complex jobs to deep modules — `TurnStream`
+(interpret the stream), `Conversation` (own history + persistence), `KnowledgeGraph` (facts +
+retrieval), and `Memory` (the model-facing surface). The interface of each deep module is its
+test surface; see `tests/`.
+
+**Cache-prefix discipline.** `_rebuild_agent` builds the system prompt via
+`build_instructions(persona, capabilities, ambient, volatile=date)`, which guarantees the
+volatile date line lands **last** — because llama-server caches the longest stable prefix and
+the date is the only daily-volatile part. The invariant lives in the builder's *shape*, not a
+comment. The memory preamble is *semi*-volatile, so it is recomputed **only at conversation
+boundaries** (mount, `/system`, new chat, open conversation) — never mid-turn. Within a
+conversation the whole prompt is constant and its KV prefix is reused; a fact the model writes
+mid-turn shows up in Background/Recent at the next conversation switch (and is findable via
+`recall` in the meantime).
