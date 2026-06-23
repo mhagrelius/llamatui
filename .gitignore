@@ -1,0 +1,40 @@
+# This repo is ONLY the Python TUI app. The local llama-server binaries, models,
+# caches and logs live alongside it on disk but must never be committed.
+
+# ---- llama.cpp / llama-server artifacts ----
+*.dll
+*.exe
+*.gguf
+*.bin
+*.so
+*.dylib
+llama-server*
+run-llama-server.ps1
+bench.py
+cache/
+logs/
+models/
+slots/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---- secrets / local env ----
+.env
+*.env
+.envrc
+
+# ---- editor / tooling ----
+.claude/
+.vscode/
+.idea/
+.DS_Store

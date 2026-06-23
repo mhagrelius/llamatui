@@ -1,0 +1,139 @@
+/* llamatui theme */
+
+Screen {
+    background: $background;
+}
+
+#body {
+    height: 1fr;
+}
+
+/* ---- sidebar ---------------------------------------------------------- */
+#sidebar {
+    width: 32;
+    background: $panel;
+    border-right: solid $primary 40%;
+}
+
+#sidebar-title {
+    height: 1;
+    color: $text-muted;
+    text-style: bold;
+    background: $boost;
+}
+
+#conv-list {
+    height: 1fr;
+    background: $panel;
+    scrollbar-size-vertical: 1;
+}
+
+#conv-list > ListItem {
+    padding: 0 1;
+    color: $text;
+}
+
+#conv-list > ListItem.-active {
+    background: $primary 25%;
+    border-left: thick $accent;
+}
+
+#conv-list > ListItem.--highlight {
+    background: $primary 15%;
+}
+
+/* ---- main column ------------------------------------------------------ */
+#main {
+    width: 1fr;
+}
+
+#transcript {
+    height: 1fr;
+    padding: 1 2;
+    scrollbar-size-vertical: 1;
+}
+
+.system-note {
+    color: $text-muted;
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+
+.user-turn {
+    background: $primary 12%;
+    color: $text;
+    border-left: thick $primary;
+    padding: 0 1;
+    margin: 1 0 0 0;
+}
+
+.assistant-turn {
+    height: auto;
+    margin: 0 0 1 0;
+    padding: 0;
+}
+
+.assistant-turn #think {
+    margin: 1 0 0 0;
+    border: none;
+    background: $boost;
+}
+
+.assistant-turn #think-body {
+    padding: 0 1;
+}
+
+.assistant-turn CollapsibleTitle {
+    color: $text-muted;
+    text-style: dim;
+}
+
+#tools {
+    height: auto;
+    margin: 0;
+}
+
+.tool-call {
+    color: $text;
+    background: $boost;
+    padding: 0 1;
+    margin: 1 0 0 0;
+}
+
+#answer {
+    height: auto;
+    margin: 0;
+    padding: 0 1;
+    background: transparent;
+}
+
+.turn-metrics {
+    color: $text-muted;
+    padding: 0 1;
+    margin: 0;
+}
+
+.turn-metrics.error {
+    color: $error;
+}
+
+/* ---- status + prompt -------------------------------------------------- */
+#status {
+    height: 1;
+    background: $panel;
+    color: $text;
+    padding: 0 1;
+}
+
+#prompt {
+    height: auto;
+    max-height: 8;
+    border: round $primary;
+    background: $surface;
+    padding: 0 1;
+    margin: 0 1 0 1;
+}
+
+#prompt:focus {
+    border: round $accent;
+}
