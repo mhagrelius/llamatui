@@ -113,10 +113,14 @@ class WhisperServer:
             port = _free_port()
             base = f"http://127.0.0.1:{port}"
             try:
+                # Absolute paths: we spawn with cwd set to the binary's dir (so its bundled
+                # DLLs resolve there), which would otherwise break a model path relative to
+                # the repo root.
+                bin_abs = self._bin.resolve()
                 self._proc = self._spawn(
-                    [str(self._bin), "--model", str(self._model),
+                    [str(bin_abs), "--model", str(self._model.resolve()),
                      "--host", "127.0.0.1", "--port", str(port)],
-                    cwd=str(self._bin.parent),
+                    cwd=str(bin_abs.parent),
                 )
             except Exception as exc:
                 raise WhisperError(f"failed to spawn whisper-server: {exc}") from exc
