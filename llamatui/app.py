@@ -14,6 +14,7 @@ reflects its state into widgets.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import time
 from datetime import datetime
@@ -145,6 +146,70 @@ class _Debouncer:
         fire = self._last is None or (now - self._last) >= self._window
         self._last = now
         return fire
+
+
+_DEFAULT_KEY_DELAY_S = 0.5
+
+# Hold-to-talk gaps. Before the first auto-repeat we must wait the OS initial-repeat delay D
+# plus a margin (a held key is silent until repeat begins at ~D). Once a repeat confirms the
+# burst is live, a short gap means release — crisp and independent of D. See ADR-0002.
+HOLD_INITIAL_MARGIN_S = 0.30
+HOLD_RELEASE_GAP_ACTIVE_S = 0.20
+
+
+def keyboard_initial_delay_s() -> float:
+    """OS initial key-repeat delay in seconds, or a safe default if unavailable.
+    Windows SPI_GETKEYBOARDDELAY returns 0-3 → 250/500/750/1000 ms."""
+    SPI_GETKEYBOARDDELAY = 0x0016
+    try:
+        value = ctypes.c_int()
+        ok = ctypes.windll.user32.SystemParametersInfoW(
+            SPI_GETKEYBOARDDELAY, 0, ctypes.byref(value), 0
+        )
+        if ok and 0 <= value.value <= 3:
+            return 0.25 * (value.value + 1)
+    except Exception:  # pragma: no cover - non-Windows / restricted env falls back
+        pass
+    return _DEFAULT_KEY_DELAY_S
+
+
+class _HoldController:
+    """Maps a Ctrl+R auto-repeat burst to record start/stop, inferring 'release' from a gap in
+    the burst (terminals expose no key-release; see ADR-0002). Pure and clock-injected: the App
+    feeds it key events and timer ticks and acts on the returned signals."""
+
+    def __init__(self, initial_delay_s: float) -> None:
+        self._before_gap = initial_delay_s + HOLD_INITIAL_MARGIN_S
+        self._active_gap = HOLD_RELEASE_GAP_ACTIVE_S
+        self._recording = False
+        self._repeating = False
+        self._last_key = 0.0
+
+    @property
+    def recording(self) -> bool:
+        return self._recording
+
+    def on_key(self, now: float) -> bool:
+        """A Ctrl+R event. Returns True only on the first press (caller should start recording);
+        later events are auto-repeat and confirm the burst is live."""
+        self._last_key = now
+        if not self._recording:
+            self._recording = True
+            self._repeating = False
+            return True
+        self._repeating = True
+        return False
+
+    def expired(self, now: float) -> bool:
+        """Poll tick. Returns True once the release gap has elapsed (caller should stop)."""
+        if not self._recording:
+            return False
+        gap = self._active_gap if self._repeating else self._before_gap
+        if now - self._last_key > gap:
+            self._recording = False
+            self._repeating = False
+            return True
+        return False
 
 
 class Config:
