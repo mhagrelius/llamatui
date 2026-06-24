@@ -97,9 +97,29 @@ use these names in code, comments, and reviews rather than inventing new ones.
   feature-detection with no spawn; dictation degrades **off** when it is false.
 
 - **paths** — `paths.py` is the single source of truth for per-user on-disk locations
-  (`user_data_dir()`, `default_whisper_dir()`). The conversations **Store** DB and the
-  whisper assets fetched by `llamatui --setup-voice` share this one root, so the app finds
-  them regardless of the current working directory.
+  (`user_data_dir()`, `default_whisper_dir()`, `settings_path()`). The conversations
+  **Store** DB, the whisper assets fetched by `llamatui --setup-voice`, and the persisted
+  **Settings** file all share this one root, so the app finds them regardless of the current
+  working directory.
+
+- **Settings** — the *global, persisted user preferences* (`settings.py`): the same for
+  every conversation and surviving restart — the sampling knobs (`thinking_budget`,
+  `temperature`, `top_p`, `max_tokens`), the **voice mode**, and `show_thinking`. This is one
+  of **three buckets** for state, distinguished by a single test:
+  - **Config** — *bootstrap*: set once at launch, immutable for the session (url, model,
+    db_path, whisper paths, feature enables). *"Can it change after launch?"* No → here.
+  - **Settings** — *"is it the same for every conversation and persisted?"* Yes → here.
+  - **Conversation** — *per-conversation state* persisted with one chat (the system prompt,
+    history). *"Does it belong to one chat?"* Yes → here.
+
+  Precedence on load is **CLI flag > saved file > built-in default** (`DEFAULTS` is the one
+  source of the defaults). Loading never writes the file, so a one-off CLI flag wins for that
+  run without persisting; only the Settings panel writes.
+
+- **voice mode** — how a `Ctrl+R` key stream is mapped to dictation verbs (a **Settings**
+  field). **Toggle** (default): press starts, press again stops. **Hold**: hold to record,
+  release to stop — but terminals (and Textual) expose no key-release, so "release" is
+  inferred from a gap in the key's OS **auto-repeat** burst. See [[Dictation]].
 
 ## Architecture stance
 

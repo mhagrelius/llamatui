@@ -14,11 +14,12 @@ input *mode* (toggle vs hold-to-speak), and thinking-pane visibility.
 
 | Question | Decision |
 |---|---|
-| Surface | A **modal settings panel** (Textual `ModalScreen`). No slash-command *editing* surface in v1; a `/settings` command and a key binding both *open* the panel. |
+| Surface | A **modal settings panel** (Textual `ModalScreen`), opened by **`Ctrl+,`** (fall back to the reliable `Ctrl+T`, freed below, if a terminal doesn't deliver `Ctrl+,`). No slash-command surface — the user doesn't use them. |
+| Thinking visibility | Panel-only. **`Ctrl+T` and `/think` are removed**; `show_thinking` is set exclusively through the panel and persists (so the visibility preference now sticks across launches, instead of resetting to shown each launch). |
 | Persistence | **Persist to a JSON file** under the per-user data dir; becomes the defaults next launch. |
 | Precedence | **CLI flag > saved file > built-in default.** A one-off CLI flag wins for that run and does **not** overwrite the file. |
 | v1 settings | Sampling knobs (`thinking_budget`, `temperature`, `top_p`, `max_tokens`), `voice_mode` (toggle/hold), `show_thinking`. |
-| Save semantics | **Load never writes the file.** The panel shows/edits effective values; **Save writes the full set** to the file (what-you-see-is-what-you-save). |
+| Save semantics | **Load never writes the file.** The panel shows effective values; **Save merges only the fields the user changed** onto the existing file, so a one-off CLI flag never leaks into persistence. |
 | Cache safety | Sampling changes rebuild the agent from **cached instructions** — never recompute the system prompt mid-conversation, so the KV-cache prefix survives. |
 | Hold-to-talk mechanism | **Auto-repeat gap heuristic** (terminals don't give key-release; Textual doesn't enable Kitty event-type reporting — see "Why not real key-release"). Toggle stays the default. |
 
@@ -53,7 +54,8 @@ event reporting:
 So no Textual app at this version can observe key-up, even on a Kitty-capable terminal.
 Holding `Ctrl+R` instead produces an auto-repeat **burst** of key-down events under every
 mode, which the heuristic below interprets. (Sources: Kitty keyboard-protocol spec; Blessed
-docs on the report-events flag.)
+docs on the report-events flag.) The full rationale — and why we rejected real key-release and
+a single fixed timeout — lives in **`docs/adr/0002-hold-to-talk-via-auto-repeat-gap.md`**.
 
 ## Architecture
 
@@ -92,8 +94,10 @@ Interface:
   `DEFAULTS`, overlay any values present in the saved file at `path`, then overlay any
   **non-`None`** entries in `cli`. Pure; **never writes**. Forgiving: a missing/malformed
   file or unknown keys degrade to defaults, never raise.
-- `save(self, path: Path) -> None` — write the full current values (plus `"version": 1`) to
-  `path` as JSON. Creates the parent dir if needed.
+- `save_changes(path: Path, changed: dict) -> None` — **field-level merge**: read the
+  existing file (forgiving), overlay only the keys in `changed`, re-stamp `"version": 1`, and
+  write back as JSON. Creates the parent dir if needed. Persisting only what the user changed
+  in the panel keeps a one-off CLI flag from leaking into the file (see Save semantics).
 - `to_dict()` / `from_dict(d)` — round-trip helpers; `from_dict` ignores unknown keys, fills
   missing ones from `DEFAULTS`, and parses `voice_mode` forgivingly (unknown → `TOGGLE`).
 
@@ -132,6 +136,9 @@ alongside the existing `toggle()`; the state machine and its seams are otherwise
 - `stop()` — `recording → transcribing` (same body as today's `_stop`, including the
   min-duration guard); **no-op** if idle or transcribing.
 - `toggle()` — unchanged behaviour, now expressed in terms of `start()`/`stop()`.
+- `cancel()` — **quiet stop that discards**: `recording → idle` closing the mic stream
+  *without* transcribing; **no-op** if idle or transcribing. Used when `voice_mode` changes
+  mid-recording, so the next dictation starts cleanly under the new key→verb mapping.
 
 ### `Config` (`app.py`) — slimmed
 
@@ -152,20 +159,36 @@ bootstrap: `url`, `model`, `system`, `db_path`, `web`, `memory`, `voice`, `whisp
 
 `_rebuild_agent()` becomes `self._instructions = self._build_instructions(); self._apply_agent()`.
 
+**Mid-stream safety.** The panel can be opened (and saved) while a turn is generating — the
+opener is not gated on `_busy`. Sampling changes apply to the **next** turn: the `generate`
+worker reads `self.agent` once to build the streaming iterator, so `_apply_agent` swapping in a
+new agent leaves the in-flight iterator bound to the old agent object (still alive, no shared
+mutable state). A `show_thinking` change re-runs pane visibility across all turns including the
+live one, which is harmless.
+
 Settings lifecycle in the app:
 
 - `on_mount`: `self.settings = settings.load(paths.settings_path(), cli_overrides)`.
-- New `action_open_settings()` (bound to **`Ctrl+,`**) and `/settings` command both
-  `push_screen(SettingsScreen(self.settings), self._on_settings_closed)`.
-- `_on_settings_closed(result)`: if `None`, do nothing. Else diff old vs new:
+- New `action_open_settings()` (bound to **`Ctrl+,`**) does
+  `push_screen(SettingsScreen(self.settings), self._on_settings_closed)`. No `/settings`
+  command. The `Ctrl+T` binding, the `action_toggle_thinking` method, and the `/think` command
+  are **removed**; the freed `Ctrl+T` is the fallback opener key if `Ctrl+,` proves unreliable
+  on a given terminal.
+- `_on_settings_closed(result)`: if `None`, do nothing. Else compute the **changed set**
+  (`{field: new[field]}` for fields where `old != new`) and act on it:
   - any sampling field changed → `self.settings = result; self._apply_agent()`.
   - `show_thinking` changed → update `self.settings` and re-run pane visibility across
-    existing `AssistantTurn`s (the body of today's `action_toggle_thinking`).
-  - `voice_mode` changed → just store it (read live by `action_dictate`).
-  - always `result.save(paths.settings_path())`.
-- `action_toggle_thinking` / `/think` now flip `self.settings.show_thinking` and **persist**
-  (so the Ctrl+T toggle and the panel can't drift). `show_thinking` reads move from
-  `self.show_thinking` to `self.settings.show_thinking`.
+    existing `AssistantTurn`s (the pane-visibility loop lifted out of the now-removed
+    `action_toggle_thinking`).
+  - `voice_mode` changed → store it (read live by `action_dictate`) **and** if a recording is
+    in flight, `dictation.cancel()` it to idle, so the next dictation starts under the new
+    mapping (avoids a toggle-started recording stranded with no hold poll timer).
+  - if the changed set is non-empty → `Settings.save_changes(paths.settings_path(), changed)`
+    (merge only those fields; untouched CLI overrides never get written).
+- `show_thinking` reads move from `self.show_thinking` to `self.settings.show_thinking`
+  (e.g. the `AssistantTurn(show_thinking=...)` construction at mount/open). It is written only
+  via the panel; there is no in-session toggle key, so memory and disk never drift and the
+  merge-on-save diff stays uniform across all fields.
 
 ### Voice mode dispatch (`action_dictate`)
 
@@ -174,15 +197,33 @@ Branch on `self.settings.voice_mode`:
 - **TOGGLE** — unchanged: `_Debouncer` collapses held auto-repeat, then `dictation.toggle()`,
   arm/disarm the existing 120 s cap timer.
 - **HOLD** — a small framework-free helper (mirroring `_Debouncer`) interprets the key
-  stream:
+  stream with a **two-phase release gap**, because terminals (and Textual) expose no
+  key-release; "release" is inferred from a gap in the OS **auto-repeat** burst.
   - first `Ctrl+R` while idle → `dictation.start()`, arm the 120 s cap timer, **and** arm a
-    repeating poll timer (~0.1 s).
-  - each subsequent `Ctrl+R` (auto-repeat) → push a release deadline forward
-    (`last_key = now`).
-  - the poll timer fires `dictation.stop()` and disarms itself once
-    `now - last_key > HOLD_RELEASE_GAP_S` (~0.55 s — above the OS initial-repeat delay so we
-    don't false-stop in the pre-repeat pause).
+    repeating poll timer (~0.05 s). Mark the recording as *not yet repeating*.
+  - each subsequent `Ctrl+R` → push `last_key = now`; the **second** keydown flips the
+    recording to *repeating* (auto-repeat confirmed live).
+  - the poll timer fires `dictation.stop()` and disarms itself once `now - last_key` exceeds
+    the active gap:
+    - **before the first repeat** (still inside the initial-delay pause): gap =
+      `D + INITIAL_MARGIN` (~`D + 0.30 s`). We must wait at least this long, since a genuine
+      hold is silent until the first repeat at ~`D`.
+    - **after a repeat is seen** (gaps are now ~33 ms): gap = `RELEASE_GAP_ACTIVE` (~0.20 s),
+      so a real hold-to-talk stops crisply ~0.2 s after release, **independent of `D`**.
   - the 120 s cap stays as a safety stop.
+
+`D` (the OS initial key-repeat delay) is read once at startup via
+`SystemParametersInfo(SPI_GETKEYBOARDDELAY)` (0–3 → ~250/500/750/1000 ms), in a small
+Windows-only `ctypes` helper that returns a safe default (~0.5 s) if the call fails. The helper
+feeds `D` into the hold controller's constructor; the controller itself stays pure and
+framework-free (injected `now`, injected gap params), so it is unit-tested with a fake clock.
+
+**No auto-fallback to toggle.** A sub-`D` tap is indistinguishable from a no-auto-repeat
+terminal (both are a single keydown then silence), so per-recording detection would misfire on
+ordinary short holds. Standard Windows terminals deliver OS key auto-repeat as repeated key
+events, so hold works there; the requirement is documented, and toggle stays the reliable
+default. On a genuinely non-repeating terminal, each hold degrades to one ~`(D + margin)` clip
+— usable, not a hang.
 
 The Dictation state machine is untouched by mode; only the app's key→verb mapping differs.
 
@@ -191,23 +232,26 @@ The Dictation state machine is untouched by mode; only the app's key→verb mapp
 ### Editing a setting
 
 ```
-Ctrl+, / "/settings"  → action_open_settings()
+Ctrl+,  → action_open_settings()
   → push_screen(SettingsScreen(self.settings))
        user edits controls; Enter validates → dismiss(new_settings)
   → _on_settings_closed(new_settings)
+       changed = {field: new[field] for field where old != new}
        sampling changed?      → self.settings = new; _apply_agent()   # cached instructions → prefix intact
        show_thinking changed? → update panes across AssistantTurns
        voice_mode changed?    → store (read live by action_dictate)
-       always                 → new.save(settings_path())
+       changed non-empty?     → save_changes(settings_path(), changed)  # merge only changed fields
 ```
 
 ### Hold-mode dictation
 
 ```
-Ctrl+R (held) → action_dictate()  [voice_mode == HOLD]
-  first event (idle):  dictation.start(); arm 120s cap; arm poll timer (0.1s)
-  repeats:             last_key = now            # deadline pushed forward
-  poll timer:          now - last_key > 0.55s →  dictation.stop(); disarm poll timer
+Ctrl+R (held) → action_dictate()  [voice_mode == HOLD]   # D = SPI_GETKEYBOARDDELAY, read at startup
+  first event (idle):  dictation.start(); arm 120s cap; arm poll timer (~0.05s); repeating=False
+  2nd event:           last_key = now; repeating = True       # auto-repeat confirmed live
+  later repeats:       last_key = now                         # deadline pushed forward
+  poll timer:          gap = (D + 0.30s) if not repeating else 0.20s
+                       now - last_key > gap →  dictation.stop(); disarm poll timer
                        (transcribe runs via the existing background worker)
 ```
 
@@ -226,8 +270,7 @@ distinguishable from "defaulted"; the help text quotes `settings.DEFAULTS`. A ne
 | `--max-tokens N` | `max_tokens` | `None` | `32000` |
 | `--voice-mode {toggle,hold}` | `voice_mode` | `None` | `toggle` |
 
-`show_thinking` has no CLI flag (it already has Ctrl+T / `/think`); it loads from file or
-defaults to `True`. The bootstrap flags (`--url`, `--model`, `--system`, `--db`, `--no-web`,
+`show_thinking` has no CLI flag (it is panel-only); it loads from file or defaults to `True`. The bootstrap flags (`--url`, `--model`, `--system`, `--db`, `--no-web`,
 `--no-memory`, `--no-voice`, `--whisper-*`) are unchanged and stay on `Config`.
 
 ## Error handling
@@ -241,7 +284,8 @@ defaults to `True`. The bootstrap flags (`--url`, `--model`, `--system`, `--db`,
 | invalid `voice_mode` string | parsed to `TOGGLE` |
 | invalid numeric typed in panel | inline error; Save blocked; screen stays open |
 | Save can't write (I/O error) | surface a one-line status note; in-memory settings still apply for the session |
-| hold mode on a terminal with no key auto-repeat | recording starts but never auto-stops via the gap; the 120 s cap still stops it (degrades, doesn't hang) |
+| hold mode on a terminal with no key auto-repeat | every hold is one keydown → one ~`(D + margin)` clip stopped by the before-first-repeat gap (degraded but usable; not a hang). Toggle remains the reliable default |
+| `SPI_GETKEYBOARDDELAY` query fails | hold controller uses a safe default `D` (~0.5 s); no crash |
 
 ## Testing
 
@@ -250,32 +294,45 @@ Interface = test surface. No Textual required for the core logic.
 - **`settings.py`** (`tests/test_settings.py`):
   - precedence: `DEFAULTS` < file < CLI; non-`None` CLI overrides win; `None` CLI entries
     don't clobber file values.
-  - save → load round-trip (including `top_p=None` and each `voice_mode`).
+  - `save_changes` round-trip: merging a subset onto an existing file overlays only those
+    keys and leaves the rest (including a value that differs from `DEFAULTS`) untouched;
+    merging onto a missing file creates it; round-trips `top_p=None` and each `voice_mode`.
   - malformed/empty/missing file → `DEFAULTS`, no raise.
   - unknown keys ignored; missing keys filled; bad `voice_mode` → `TOGGLE`.
   - `load` does **not** write the file.
-- **Hold controller** (`tests/test_settings.py` or `tests/test_dictation.py`): a pure helper
-  driven by a fake clock — starts on first key, refreshes deadline on repeats, stops after the
-  gap, no-op after stop.
-- **`Dictation`** (`tests/test_dictation.py`): new `start()`/`stop()` idempotency
-  (`start` while recording = no-op; `stop` while idle = no-op); `toggle()` still drives
-  idle→recording→transcribing→idle.
+- **Hold controller** (`tests/test_dictation.py`): a pure helper driven by a fake clock and
+  injected `D` —
+  - first key starts; **before any repeat**, stops only after `D + INITIAL_MARGIN`.
+  - a second key flips to *repeating*; thereafter stops ~`RELEASE_GAP_ACTIVE` after the last
+    key — verify a long stream of repeats keeps it alive and a real release stops it crisply,
+    **independent of `D`**.
+  - a single keydown then silence (no-repeat terminal / sub-`D` tap) yields one
+    `D + INITIAL_MARGIN` clip, no hang.
+  - no-op after stop. (The `SPI_GETKEYBOARDDELAY` call is **not** exercised in tests; `D` is
+    injected — the OS helper is trivial and Windows-only.)
+- **`Dictation`** (`tests/test_dictation.py`): new `start()`/`stop()`/`cancel()` —
+  `start` while recording = no-op; `stop` while idle = no-op; `cancel` while recording → idle
+  **without** invoking the transcriber, and is a no-op while idle/transcribing; `toggle()`
+  still drives idle→recording→transcribing→idle.
 - **`SettingsScreen`**: validation/build logic tested through its pure in→out contract
   (current `Settings` → edited `Settings`); a light `run_test` pilot only if cheap.
 
 ## Files touched / added
 
-- **add** `llamatui/settings.py` — `Settings`, `VoiceMode`, `DEFAULTS`, `load`, `save`
+- **add** `llamatui/settings.py` — `Settings`, `VoiceMode`, `DEFAULTS`, `load`, `save_changes`
 - **add** `llamatui/settings_screen.py` — `SettingsScreen` modal
 - **add** `tests/test_settings.py` — precedence, persistence, hold controller
+- **add** `docs/adr/0002-hold-to-talk-via-auto-repeat-gap.md` (done)
 - **edit** `llamatui/paths.py` — `settings_path()`
-- **edit** `llamatui/dictation.py` — public `start()` / `stop()` verbs
+- **edit** `llamatui/dictation.py` — public `start()` / `stop()` / `cancel()` verbs
 - **edit** `tests/test_dictation.py` — `start`/`stop` idempotency
 - **edit** `llamatui/app.py` — `Config` slimmed; `self.settings`; `_build_instructions` /
-  `_apply_agent` split; `action_open_settings` + `_on_settings_closed`; `/settings` command;
-  `voice_mode` dispatch + hold controller; `show_thinking` moves into settings and persists
+  `_apply_agent` split; `action_open_settings` (`Ctrl+,`) + `_on_settings_closed`; **remove**
+  `Ctrl+T` binding, `action_toggle_thinking`, and the `/think` command (+ its `HELP` line);
+  `voice_mode` dispatch + two-phase hold controller (pure class beside `_Debouncer`) + the
+  `SPI_GETKEYBOARDDELAY` `ctypes` helper; `show_thinking` moves into settings, panel-only
 - **edit** `llamatui/__main__.py` — sentinel defaults; `--voice-mode`; build `cli` dict;
   `settings.load`
 - **edit** `CONTEXT.md` — `Settings` (and the `_build_instructions`/`_apply_agent` seam)
   glossary entry
-- **edit** `README.md` — settings panel + `Ctrl+,` / `/settings` + `--voice-mode`
+- **edit** `README.md` — settings panel + `Ctrl+,`; note `Ctrl+T` / `/think` removed; `--voice-mode`
