@@ -25,14 +25,16 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
 from . import metrics as M
-from .client import build_agent, detect_context_window, detect_model_id
+from .client import build_agent, detect_context_window, detect_model_id, humanize_model_name
 from .conversation import Conversation
+from .dictation import Dictation, State, build_recorder
 from .graph import KnowledgeGraph, build_embedder
 from .instructions import build_instructions
 from .memory import Memory
 from .storage import Store, connect
 from .tools import build_exa_tool, exa_key_present
 from .turn import WRITING, TurnStream, strip_tool_noise
+from .whisper import WhisperServer
 from .widgets import AssistantTurn, PromptArea, StatusBar, UserTurn
 
 HELP = """[b]commands[/b]
@@ -117,11 +119,29 @@ def _date_line() -> str:
 
 RENDER_INTERVAL = 0.06
 
+# Holding Ctrl+R makes the terminal auto-repeat the key (~30-50 ms apart), which would
+# otherwise toggle dictation on/off rapidly (flicker). A leading-edge debounce fires on the
+# first press and swallows the rest of the burst; every event refreshes the timer, so a
+# continuous hold never re-fires until there's a quiet gap longer than the window.
+DICTATE_DEBOUNCE_S = 0.5
+
+
+class _Debouncer:
+    def __init__(self, window_s: float) -> None:
+        self._window = window_s
+        self._last: float | None = None
+
+    def should_fire(self, now: float) -> bool:
+        fire = self._last is None or (now - self._last) >= self._window
+        self._last = now
+        return fire
+
 
 class Config:
     def __init__(
         self, url, model, system, temperature, max_tokens, top_p,
-        db_path=None, web=True, memory=True,
+        thinking_budget=None, db_path=None, web=True, memory=True,
+        voice=True, whisper_bin=None, whisper_model=None, whisper_url=None,
     ):
         self.url = url
         self.model = model
@@ -129,9 +149,14 @@ class Config:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.top_p = top_p
+        self.thinking_budget = thinking_budget
         self.db_path = db_path
         self.web = web
         self.memory = memory
+        self.voice = voice
+        self.whisper_bin = whisper_bin
+        self.whisper_model = whisper_model
+        self.whisper_url = whisper_url
 
 
 class LlamaTUI(App):
@@ -143,6 +168,7 @@ class LlamaTUI(App):
         Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
         Binding("ctrl+t", "toggle_thinking", "Thinking"),
         Binding("ctrl+d", "delete_chat", "Delete"),
+        Binding("ctrl+r", "dictate", "Dictate"),
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
@@ -151,7 +177,7 @@ class LlamaTUI(App):
         super().__init__()
         self.config = config
         self.show_thinking = True
-        self.model_label = config.model
+        self.model_label = humanize_model_name(config.model)
         self.context_window: int | None = None
         self.agent = None
         self._busy = False
@@ -160,6 +186,11 @@ class LlamaTUI(App):
         self.web_tool = None
         self.web_enabled = False
         self.memory: Memory | None = None
+        self.whisper: WhisperServer | None = None
+        self.dictation: Dictation | None = None
+        self.voice_enabled = False
+        self._cap_timer = None
+        self._dictate_debounce = _Debouncer(DICTATE_DEBOUNCE_S)
 
     # ---- setup -----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -181,7 +212,7 @@ class LlamaTUI(App):
         detected = detect_model_id(self.config.url)
         if detected:
             self.config.model = detected
-            self.model_label = detected.replace("\\", "/").rsplit("/", 1)[-1]
+            self.model_label = humanize_model_name(detected)
         self.context_window = detect_context_window(self.config.url)
         connected = detected is not None
 
@@ -202,6 +233,24 @@ class LlamaTUI(App):
             self.memory = Memory(KnowledgeGraph(conn))
             self._load_embedder()
 
+        if self.config.voice:
+            self.whisper = WhisperServer(
+                bin_path=self.config.whisper_bin,
+                model_path=self.config.whisper_model,
+                url=self.config.whisper_url,
+            )
+            recorder = build_recorder()
+            if recorder is not None and self.whisper.available():
+                self.dictation = Dictation(
+                    recorder=recorder,
+                    transcriber=self.whisper,
+                    run_bg=self._dictation_bg,
+                    on_text=self._insert_transcript,
+                    on_state=self._voice_state,
+                    on_note=self._voice_note,
+                )
+                self.voice_enabled = True
+
         self._rebuild_agent()
         self._refresh_sidebar()
         self.query_one("#prompt", PromptArea).focus()
@@ -212,15 +261,24 @@ class LlamaTUI(App):
             else "web search [b]off[/]"
         )
         mem = f"memory [b]{'on' if self.memory is not None else 'off'}[/]"
+        voice = f"voice [b]{'on' if self.voice_enabled else 'off'}[/]"
         self._write_system(
             f"Connected to [b]{self.config.url}[/]  ·  model [b]{self.model_label}[/]"
             + (f"  ·  ctx {self.context_window:,}" if self.context_window else "")
-            + f"  ·  {web}  ·  {mem}"
+            + f"  ·  {web}  ·  {mem}  ·  {voice}"
             + "\nType a message, or [cyan]/help[/] for commands."
         )
         self._status("ready", connected=connected)
 
     async def on_unmount(self) -> None:
+        if self._cap_timer is not None:
+            self._cap_timer.stop()
+            self._cap_timer = None
+        if self.whisper is not None:
+            try:
+                self.whisper.close()
+            except Exception:
+                pass
         if self.web_tool is not None:
             try:
                 await self.web_tool.close()
@@ -228,6 +286,11 @@ class LlamaTUI(App):
                 pass
         if self.store is not None:
             self.store.close()
+
+    @work(thread=True, group="dictation")
+    def _dictation_bg(self, task, done) -> None:
+        result = task()
+        self.call_from_thread(done, result)
 
     @work(thread=True, group="embedder")
     def _load_embedder(self) -> None:
@@ -271,6 +334,7 @@ class LlamaTUI(App):
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
             top_p=self.config.top_p,
+            thinking_budget=self.config.thinking_budget,
             tools=tools or None,
         )
 
@@ -495,6 +559,46 @@ class LlamaTUI(App):
             self._status("cancelled", connected=True)
             if self.conversation is not None:
                 self.conversation.undo_last_user()
+
+    def on_prompt_area_dictate(self, event: PromptArea.Dictate) -> None:
+        self.action_dictate()
+
+    def action_dictate(self) -> None:
+        # Collapse held-key auto-repeat to a single toggle (see _Debouncer).
+        if not self._dictate_debounce.should_fire(time.monotonic()):
+            return
+        if self.dictation is None:
+            self._voice_note("voice off — run scripts/get-whisper.ps1 to enable")
+            return
+        self.dictation.toggle()
+        if self.dictation.state is State.RECORDING:
+            self._cap_timer = self.set_timer(120.0, self._cap_stop)
+        elif self._cap_timer is not None:
+            self._cap_timer.stop()
+            self._cap_timer = None
+
+    def _cap_stop(self) -> None:
+        self._cap_timer = None
+        if self.dictation is not None and self.dictation.state is State.RECORDING:
+            self._voice_note("recording stopped (max length)")
+            self.dictation.toggle()
+
+    def _insert_transcript(self, text: str) -> None:
+        prompt = self.query_one("#prompt", PromptArea)
+        prompt.insert_transcript(text)
+        prompt.focus()
+
+    def _voice_state(self, state) -> None:
+        labels = {
+            State.IDLE: "",
+            State.RECORDING: "🎙 recording",
+            State.TRANSCRIBING: "transcribing…",
+        }
+        self.query_one("#status", StatusBar).show(voice=labels[state])
+
+    def _voice_note(self, msg: str) -> None:
+        self.query_one("#status", StatusBar).show(voice=msg)
+        self.set_timer(3.0, lambda: self.query_one("#status", StatusBar).show(voice=""))
 
     def action_toggle_thinking(self) -> None:
         self.show_thinking = not self.show_thinking

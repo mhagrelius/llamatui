@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import urllib.request
 import json
+import re
 
 from agent_framework import ChatOptions, ChatResponseUpdate, Content, Message
 from agent_framework.openai import OpenAIChatCompletionClient
@@ -67,13 +68,25 @@ def build_agent(
     temperature: float = 0.7,
     max_tokens: int = 32000,
     top_p: float | None = None,
+    thinking_budget: int | None = None,
     tools=None,
 ):
-    """Create a ChatAgent backed by the reasoning-aware llama-server client."""
+    """Create a ChatAgent backed by the reasoning-aware llama-server client.
+
+    ``thinking_budget`` caps how many tokens the model may spend thinking before
+    llama-server injects the end-of-thinking tag and forces the answer: ``N>0`` is a
+    token budget, ``0`` disables thinking, ``-1`` is unlimited. It rides in ``extra_body``
+    as llama.cpp's non-standard ``thinking_budget_tokens`` field — ``ChatOptions`` is a
+    plain dict whose keys are forwarded as kwargs to ``chat.completions.create``, and the
+    OpenAI SDK merges ``extra_body`` into the request JSON. Note: the server honors this
+    only when launched *without* a ``--reasoning-budget`` flag (a CLI budget overrides it).
+    """
     client = ReasoningChatClient(base_url=base_url, api_key=api_key, model=model)
     opts: dict = {"temperature": temperature, "max_tokens": max_tokens}
     if top_p is not None:
         opts["top_p"] = top_p
+    if thinking_budget is not None:
+        opts["extra_body"] = {"thinking_budget_tokens": thinking_budget}
     kwargs: dict = {"instructions": instructions, "default_options": ChatOptions(**opts)}
     if tools:
         kwargs["tools"] = tools
@@ -109,3 +122,45 @@ def detect_context_window(base_url: str, timeout: float = 4.0) -> int | None:
     except Exception:
         return None
     return None
+
+
+# Tokens that carry no useful identity once the name is humanized.
+_EXT_RE = re.compile(r"\.(gguf|bin|safetensors|pt|pth|ggml|onnx)$", re.IGNORECASE)
+# A quantization tag plus its leading separator, e.g. "-Q4_K_M", "_IQ4_XS", "-BF16".
+_QUANT_RE = re.compile(
+    r"[-_.]?\b(i?q\d+(?:_[0-9a-z]+)*|f16|f32|bf16|fp8|fp16|mxfp4)\b",
+    re.IGNORECASE,
+)
+# A parameter-size token: 27B, 8B, 1.5B, 8x7B, 8x22B (and the rare ...M variant).
+_SIZE_RE = re.compile(r"^\d+(?:\.\d+)?(?:x\d+(?:\.\d+)?)?[bm]$", re.IGNORECASE)
+# Boilerplate words that add nothing to a display label.
+_DROP = {"instruct", "it", "chat", "base", "hf", "gguf", "ud"}
+
+
+def humanize_model_name(model_id: str) -> str:
+    """Turn a raw model id / GGUF filename into a friendly display label.
+
+    ``Qwen3.6-27B-Instruct-Q4_K_M.gguf`` -> ``Qwen3.6 [27b]``. The first
+    parameter-size token is pulled into brackets; the file extension,
+    quantization tags, and boilerplate words (Instruct, Chat, ...) are dropped.
+    The remaining tokens keep their original casing, except bare lowercase
+    words which are capitalized ("coder" -> "Coder").
+    """
+    name = model_id.replace("\\", "/").rsplit("/", 1)[-1]
+    name = _EXT_RE.sub("", name)
+    name = _QUANT_RE.sub("", name)
+
+    size: str | None = None
+    kept: list[str] = []
+    for tok in re.split(r"[\s_-]+", name):
+        if not tok:
+            continue
+        if size is None and _SIZE_RE.match(tok):
+            size = tok.lower()
+            continue
+        if tok.lower() in _DROP:
+            continue
+        kept.append(tok.capitalize() if tok.islower() else tok)
+
+    label = " ".join(kept) or name
+    return f"{label} [{size}]" if size else label

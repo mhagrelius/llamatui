@@ -10,13 +10,26 @@ from textual.message import Message
 from textual.widgets import Collapsible, Markdown, Static, TextArea
 
 
+_OPENERS = set("([{\"'`")
+
+
+def _needs_leading_space(before: str) -> bool:
+    """Prepend a space iff the char before the cursor is real text (not start/space/opener)."""
+    if before == "" or before.isspace():
+        return False
+    return before not in _OPENERS
+
+
 class PromptArea(TextArea):
-    """A multi-line prompt. Enter submits; Ctrl+J inserts a newline."""
+    """A multi-line prompt. Enter submits; Ctrl+J inserts a newline; Ctrl+R dictates."""
 
     class Submitted(Message):
         def __init__(self, value: str) -> None:
             self.value = value
             super().__init__()
+
+    class Dictate(Message):
+        pass
 
     def _on_key(self, event: events.Key) -> None:
         if event.key == "enter":
@@ -29,7 +42,29 @@ class PromptArea(TextArea):
             event.stop()
             self.insert("\n")
             return
+        if event.key == "ctrl+r":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.Dictate())
+            return
         super()._on_key(event)
+
+    def insert_transcript(self, text: str) -> None:
+        """Insert a dictated transcript at the cursor with a single leading space when needed.
+
+        Leaves whisper's capitalization/punctuation untouched; the cursor lands after the
+        inserted text (TextArea.insert moves it). This is the one place dictation spacing lives.
+        """
+        if _needs_leading_space(self._char_before_cursor()):
+            text = " " + text
+        self.insert(text)
+
+    def _char_before_cursor(self) -> str:
+        row, col = self.cursor_location
+        if col == 0:
+            return "\n" if row > 0 else ""
+        line = self.document.get_line(row)
+        return line[col - 1] if 0 <= col - 1 < len(line) else ""
 
 
 class UserTurn(Static):
@@ -130,17 +165,46 @@ class AssistantTurn(Vertical):
             self.set_metrics(metrics_line)
 
 
-class StatusBar(Static):
-    """A single live line above the prompt: model, state, running throughput."""
-
-    def show(self, *, model: str, state: str, detail: str = "", connected: bool = True) -> None:
-        dot = "●" if connected else "○"
-        text = Text()
-        text.append(f" {dot} ", style="green" if connected else "red")
-        text.append(model, style="bold")
+def render_status(*, model: str, state: str, detail: str, connected: bool, voice: str) -> Text:
+    dot = "●" if connected else "○"
+    text = Text()
+    text.append(f" {dot} ", style="green" if connected else "red")
+    text.append(model, style="bold")
+    text.append("   ")
+    text.append(state, style="cyan")
+    if detail:
         text.append("   ")
-        text.append(state, style="cyan")
-        if detail:
-            text.append("   ")
-            text.append(detail, style="dim")
-        self.update(text)
+        text.append(detail, style="dim")
+    if voice:
+        text.append("   ")
+        text.append(voice, style="magenta")
+    return text
+
+
+class StatusBar(Static):
+    """A single live line above the prompt. Stateful: it remembers each segment so a gen-driven
+    repaint of model/state/detail never erases the independently-owned voice segment."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._model = ""
+        self._state = ""
+        self._detail = ""
+        self._connected = True
+        self._voice = ""
+
+    def show(self, *, model=None, state=None, detail=None, connected=None, voice=None) -> None:
+        if model is not None:
+            self._model = model
+        if state is not None:
+            self._state = state
+        if detail is not None:
+            self._detail = detail
+        if connected is not None:
+            self._connected = connected
+        if voice is not None:
+            self._voice = voice
+        self.update(render_status(
+            model=self._model, state=self._state, detail=self._detail,
+            connected=self._connected, voice=self._voice,
+        ))

@@ -90,6 +90,24 @@ uv sync --extra semantic    # pulls fastembed; first recall downloads a small mo
 Without it, recall is keyword-only. Everything is stored right in your conversations database;
 nothing leaves the machine. Disable memory entirely with `--no-memory`.
 
+## Voice dictation (optional)
+
+Press **Ctrl+R** in the prompt to start recording, again to stop; the transcribed text
+lands in the input for review and is **never auto-sent**. Transcription runs locally via
+whisper.cpp `whisper-server` (CUDA), reusing nothing from the llama stack — it lives in its
+own `whisper/` folder.
+
+Setup:
+
+1. Fetch the binary + model:  `pwsh scripts/get-whisper.ps1`
+2. Install the capture extra:  `uv sync --extra voice`
+3. Run as usual:  `python -m llamatui`  → the banner shows `voice on`.
+
+Flags: `--no-voice` (disable), `--whisper-bin PATH`, `--whisper-model PATH`,
+`--whisper-url URL` (point at an already-running whisper-server instead of spawning one).
+If `sounddevice`, the binary, the model, or a 16 kHz-capable mic is missing, dictation is
+simply off and the banner says so.
+
 ### Where conversations are stored
 
 Conversations persist to a SQLite file under your user data dir

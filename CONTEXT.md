@@ -74,6 +74,28 @@ use these names in code, comments, and reviews rather than inventing new ones.
   distinct, always-last slot; stable parts (persona → capability guidance → ambient memory
   block) precede it by construction. Tested as a property in `tests/test_instructions.py`.
 
+- **Dictation** — the *record → transcribe* state machine (`dictation.py`). `Ctrl+R` starts
+  recording, again to stop and transcribe; the text lands in the prompt input for review and is
+  **never auto-sent**. States: `idle → recording → transcribing → idle`, with **at most one
+  recording and one transcription live at a time** — re-entrant `Ctrl+R` during `transcribing` is a
+  no-op. The mic recorder and the transcriber are *injectable seams* (mirroring the `Embedder`
+  protocol), so tests use a fake recorder + fake transcriber — no real audio or network. Dictation
+  is **independent of the `gen` worker group**: you can dictate the next prompt while a reply still
+  streams, so it owns its own **voice** segment in the `StatusBar` rather than fighting `gen` for
+  the shared state line.
+
+- **WhisperServer** — owns *a reachable local-STT endpoint* (`whisper.py`): a whisper.cpp
+  `whisper-server`. This is the whisper **wire-adapter** seam — the single place that knows the
+  server's request shape (16 kHz mono WAV → `/inference`) and that **normalizes its output
+  vocabulary** (trim; drop non-speech annotations like `[BLANK_AUDIO]`/`(silence)`); nothing else
+  touches the subprocess or the HTTP wire, exactly as `TurnStream` is the only place that knows
+  llama-server's shape. **Discover-then-spawn, own only what you spawned**: `ensure_running()`
+  reuses an already-running server at the configured address if one answers, else lazy-spawns one
+  (isolated in the `whisper/` subdir with its own CUDA DLLs so they never collide with the repo-root
+  llama stack), and `close()` terminates **only** a subprocess this instance spawned — never a
+  shared server it merely connected to. `available()` (binary + model present) is pure
+  feature-detection with no spawn; dictation degrades **off** when it is false.
+
 ## Architecture stance
 
 The Textual `App` (`app.py`) is a **thin adapter**: it wires widgets, keybindings, and the
