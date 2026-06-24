@@ -16,7 +16,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-import platformdirs
+from . import paths
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
@@ -45,7 +45,7 @@ def _now() -> str:
 
 
 def default_db_path() -> Path:
-    d = Path(platformdirs.user_data_dir("llamatui", appauthor=False))
+    d = paths.user_data_dir()
     d.mkdir(parents=True, exist_ok=True)
     return d / "conversations.db"
 
