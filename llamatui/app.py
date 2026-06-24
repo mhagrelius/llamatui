@@ -17,6 +17,7 @@ import asyncio
 import json
 import time
 from datetime import datetime
+from pathlib import Path
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -31,6 +32,7 @@ from .dictation import Dictation, State, build_recorder
 from .graph import KnowledgeGraph, build_embedder
 from .instructions import build_instructions
 from .memory import Memory
+from .paths import default_whisper_dir
 from .storage import Store, connect
 from .tools import build_exa_tool, exa_key_present
 from .turn import WRITING, TurnStream, strip_tool_noise
@@ -115,6 +117,14 @@ def _date_line() -> str:
     # prefix above it stays identical day to day and remains cacheable by llama-server.
     now = datetime.now().astimezone()
     return f"Current date: {now:%A, %Y-%m-%d}. Treat this as today when reasoning about time."
+
+
+def resolve_whisper_dir(cwd_whisper: Path | None = None) -> Path:
+    """Dev fallback: ./whisper if it holds the server binary, else the per-user data dir."""
+    local = cwd_whisper if cwd_whisper is not None else Path("whisper")
+    if (local / "whisper-server.exe").exists():
+        return local
+    return default_whisper_dir()
 
 
 RENDER_INTERVAL = 0.06
@@ -235,6 +245,7 @@ class LlamaTUI(App):
 
         if self.config.voice:
             self.whisper = WhisperServer(
+                whisper_dir=resolve_whisper_dir(),
                 bin_path=self.config.whisper_bin,
                 model_path=self.config.whisper_model,
                 url=self.config.whisper_url,
@@ -568,7 +579,7 @@ class LlamaTUI(App):
         if not self._dictate_debounce.should_fire(time.monotonic()):
             return
         if self.dictation is None:
-            self._voice_note("voice off — run scripts/get-whisper.ps1 to enable")
+            self._voice_note("voice off — run: llamatui --setup-voice")
             return
         self.dictation.toggle()
         if self.dictation.state is State.RECORDING:
