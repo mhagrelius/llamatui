@@ -86,6 +86,12 @@ class WhisperServer:
 
         The lock serializes the discover/spawn decision: warm-at-start and the transcribe path
         both call this concurrently on the first dictation, and without it both could spawn.
+
+        Semantics:
+        1. Already healthy fast-path (checked outside and inside the lock).
+        2. If ``_configured_url`` is set: adopt it if healthy, raise if not. Never spawn.
+        3. Otherwise: pick a free port, spawn on that port, poll until healthy.
+           ``base`` is ALWAYS the freshly-spawned local address — never the configured URL.
         """
         if self._endpoint and self._healthy(self._endpoint):
             return
@@ -93,11 +99,16 @@ class WhisperServer:
             # re-check inside the lock — the other worker may have finished while we waited
             if self._endpoint and self._healthy(self._endpoint):
                 return
-            if self._configured_url and self._healthy(self._configured_url):
-                self._endpoint = self._configured_url      # adopted — leave self._proc None
-                return
+            if self._configured_url is not None:
+                if self._healthy(self._configured_url):
+                    self._endpoint = self._configured_url  # adopted — leave self._proc None
+                    return
+                raise WhisperError(
+                    f"configured whisper-url {self._configured_url} is not reachable"
+                )
+            # No configured URL — spawn a fresh local server on a free port.
             port = _free_port()
-            base = self._configured_url or f"http://127.0.0.1:{port}"
+            base = f"http://127.0.0.1:{port}"
             try:
                 self._proc = self._spawn(
                     [str(self._bin), "--model", str(self._model),

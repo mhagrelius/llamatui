@@ -2,6 +2,8 @@
 request shaping, output normalization. No real subprocess, no real network — the HTTP
 client and the spawn function are injected fakes (like FakeEmbedder in test_graph.py)."""
 
+import threading
+
 import pytest
 
 from llamatui.whisper import WhisperServer, WhisperError, _clean_transcript
@@ -78,7 +80,8 @@ def test_adopts_external_server_without_spawning(tmp_path):
     ws.close()                               # must NOT kill an adopted server (nothing to kill)
 
 def test_spawns_when_no_server_answers(tmp_path):
-    # first GET (configured-url probe) fails; after spawn, health GET succeeds
+    # No configured URL.  Health starts failing (503) then passes once the spawned
+    # server is "up" — simulated by flipping after the first GET.
     class FlakyHTTP(FakeHTTP):
         def __init__(self):
             super().__init__()
@@ -96,14 +99,44 @@ def test_spawns_when_no_server_answers(tmp_path):
     ws.close()
     assert proc.terminated is True           # we spawned it, so we kill it
 
+def test_configured_url_unreachable_raises():
+    """A configured URL that does not answer must raise WhisperError — never spawn."""
+    http = FakeHTTP(get_ok=False)
+    spawn_calls = []
+    def fake_spawn(*a, **k):
+        spawn_calls.append((a, k))
+        return FakeProc()
+    ws = WhisperServer(url="http://127.0.0.1:9999", _client=http, _spawn=fake_spawn)
+    with pytest.raises(WhisperError, match="not reachable"):
+        ws.ensure_running()
+    assert spawn_calls == []                  # must never have tried to spawn
+
+
 def test_concurrent_ensure_running_spawns_once():
-    # warm-at-start + transcribe both call ensure_running concurrently on the first dictation.
-    import threading
-    http = FakeHTTP(get_ok=True)             # health passes on the first poll after spawn
+    """warm-at-start + transcribe both call ensure_running concurrently on first dictation.
+
+    A Barrier inside fake_spawn forces BOTH threads to be inside the critical section at
+    the same time before either returns — only the lock can then keep spawns at exactly 1.
+    """
+    barrier = threading.Barrier(2, timeout=2.0)
     spawns = []
+
+    def fake_spawn(*a, **k):
+        # Both threads will hit wait(); the second to arrive unblocks both.
+        # Without the lock only one thread can be in the lock body at a time,
+        # so barrier.wait() would time-out for the second thread — the test
+        # would error, not silently pass with spawns > 1.
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass  # timeout safety: still count the spawn
+        spawns.append(1)
+        return FakeProc()
+
+    http = FakeHTTP(get_ok=True)             # health passes on first poll after spawn
     ws = WhisperServer(bin_path="whisper/whisper-server.exe",
                        model_path="whisper/ggml-small.en.bin",
-                       _client=http, _spawn=lambda *a, **k: (spawns.append(1), FakeProc())[1],
+                       _client=http, _spawn=fake_spawn,
                        health_timeout=2.0)
     threads = [threading.Thread(target=ws.ensure_running) for _ in range(2)]
     for t in threads:
@@ -126,3 +159,19 @@ def test_transcribe_normalizes_non_speech(tmp_path):
     http = FakeHTTP(get_ok=True, post_text="[BLANK_AUDIO]")
     ws = WhisperServer(url="http://127.0.0.1:9999", _client=http, _spawn=lambda *a, **k: FakeProc())
     assert ws.transcribe(b"RIFFfake") == ""
+
+
+def test_health_timeout_raises():
+    """Spawned server that never becomes healthy should raise and be terminated."""
+    http = FakeHTTP(get_ok=False)   # health probes always fail
+    proc = FakeProc()
+    ws = WhisperServer(
+        bin_path="whisper/whisper-server.exe",
+        model_path="whisper/ggml-small.en.bin",
+        _client=http,
+        _spawn=lambda *a, **k: proc,
+        health_timeout=0.1,          # expire quickly
+    )
+    with pytest.raises(WhisperError, match="did not become healthy"):
+        ws.ensure_running()
+    assert proc.terminated is True   # close() must have been called on the orphan
