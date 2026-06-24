@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "agent-framework-core>=1.8.2",
     "agent-framework-openai>=1.8.2",
+    "httpx>=0.27",
     "mcp>=1.9",
     "platformdirs>=4",
     "textual>=0.86",
@@ -16,6 +17,11 @@ dependencies = [
 # Semantic recall (in-process embeddings via fastembed). Optional: without it, memory recall
 # is keyword-only (FTS5/BM25). Install with `uv sync --extra semantic`.
 semantic = ["fastembed>=0.3"]
+
+# Voice dictation (local STT capture via sounddevice). Optional: without it, dictation is off.
+# Install with `uv sync --extra voice`. Also needs the whisper-server binary + model — see
+# scripts/get-whisper.ps1.
+voice = ["sounddevice>=0.4"]
 
 [project.scripts]
 llamatui = "llamatui.__main__:main"
