@@ -25,6 +25,10 @@ def main() -> None:
     ap.add_argument("--db", default=None, help="path to the conversations SQLite file")
     ap.add_argument("--no-web", action="store_true", help="disable the Exa web-search tool")
     ap.add_argument("--no-memory", action="store_true", help="disable the persistent memory tool")
+    ap.add_argument("--no-voice", action="store_true", help="disable voice dictation (Ctrl+R)")
+    ap.add_argument("--whisper-bin", default=None, help="path to whisper-server (default: whisper/whisper-server.exe, then PATH)")
+    ap.add_argument("--whisper-model", default=None, help="path to the whisper ggml model (default: whisper/ggml-small.en.bin)")
+    ap.add_argument("--whisper-url", default=None, help="use an already-running whisper-server at this URL instead of spawning one")
     args = ap.parse_args()
 
     base_url = args.url.rstrip("/")
@@ -42,6 +46,10 @@ def main() -> None:
         db_path=args.db,
         web=not args.no_web,
         memory=not args.no_memory,
+        voice=not args.no_voice,
+        whisper_bin=args.whisper_bin,
+        whisper_model=args.whisper_model,
+        whisper_url=args.whisper_url,
     )
     LlamaTUI(config).run()
 
