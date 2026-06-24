@@ -253,6 +253,9 @@ class LlamaTUI(App):
         self._status("ready", connected=connected)
 
     async def on_unmount(self) -> None:
+        if self._cap_timer is not None:
+            self._cap_timer.stop()
+            self._cap_timer = None
         if self.whisper is not None:
             try:
                 self.whisper.close()
@@ -267,8 +270,8 @@ class LlamaTUI(App):
             self.store.close()
 
     @work(thread=True, group="dictation")
-    def _dictation_bg(self, work, done) -> None:
-        result = work()
+    def _dictation_bg(self, task, done) -> None:
+        result = task()
         self.call_from_thread(done, result)
 
     @work(thread=True, group="embedder")

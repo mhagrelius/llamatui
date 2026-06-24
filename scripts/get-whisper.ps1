@@ -7,7 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$dir = Join-Path $PSScriptRoot "..\whisper"
+$dir = Join-Path $PSScriptRoot "../whisper"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
 # 1) whisper-server CUDA release (zip with whisper-server.exe + DLLs).

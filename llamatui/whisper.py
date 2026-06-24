@@ -19,7 +19,7 @@ import httpx
 
 # whisper emits bracket/paren-wrapped non-speech annotations on silence/noise, e.g.
 # "[BLANK_AUDIO]", "(silence)", "[ Pause ]". A transcript that is wholly such a token is empty.
-_NON_SPEECH = re.compile(r"^[\[(].*[\])]$", re.DOTALL)
+_NON_SPEECH = re.compile(r"^[\[(][^\[\]()]*[\])]$")
 
 
 class WhisperError(RuntimeError):
@@ -95,6 +95,9 @@ class WhisperServer:
         """
         if self._endpoint and self._healthy(self._endpoint):
             return
+        # NB: the lock is held across the health-poll loop below, but the poll is
+        # deadline-bounded by health_timeout, so a concurrent ensure_running() (e.g.
+        # warm-at-start vs transcribe) blocks at most that long, never indefinitely.
         with self._lock:
             # re-check inside the lock — the other worker may have finished while we waited
             if self._endpoint and self._healthy(self._endpoint):

@@ -21,6 +21,9 @@ def test_clean_transcript_drops_non_speech_annotations():
 def test_clean_transcript_keeps_real_speech_with_punctuation():
     assert _clean_transcript("Ship it. (finally)") == "Ship it. (finally)"
 
+def test_clean_transcript_keeps_speech_bracketed_at_both_ends():
+    assert _clean_transcript("(aside) real speech (end)") == "(aside) real speech (end)"
+
 
 # ---- fakes -----------------------------------------------------------------------------
 class FakeResp:
@@ -123,9 +126,11 @@ def test_concurrent_ensure_running_spawns_once():
 
     def fake_spawn(*a, **k):
         # Both threads will hit wait(); the second to arrive unblocks both.
-        # Without the lock only one thread can be in the lock body at a time,
-        # so barrier.wait() would time-out for the second thread — the test
-        # would error, not silently pass with spawns > 1.
+        # WITH the lock, only one thread can enter the lock body at a time, so
+        # barrier.wait() times out for the lone thread inside (BrokenBarrierError,
+        # caught), and exactly one spawn is recorded.
+        # WITHOUT the lock, both threads reach barrier.wait(), it releases normally,
+        # and two spawns are recorded — the assertion below would fail.
         try:
             barrier.wait()
         except threading.BrokenBarrierError:

@@ -10,7 +10,7 @@ from textual.message import Message
 from textual.widgets import Collapsible, Markdown, Static, TextArea
 
 
-_OPENERS = set("([{""\"'`")
+_OPENERS = set("([{\"'`")
 
 
 def _needs_leading_space(before: str) -> bool:
