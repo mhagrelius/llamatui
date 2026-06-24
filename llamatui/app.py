@@ -14,6 +14,7 @@ reflects its state into widgets.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import time
 from datetime import datetime
@@ -26,6 +27,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
 from . import metrics as M
+from . import paths
 from .client import build_agent, detect_context_window, detect_model_id, humanize_model_name
 from .conversation import Conversation
 from .dictation import Dictation, State, build_recorder
@@ -33,6 +35,11 @@ from .graph import KnowledgeGraph, build_embedder
 from .instructions import build_instructions
 from .memory import Memory
 from .paths import default_whisper_dir
+from .settings import (
+    DEFAULTS, SAMPLING_FIELDS, Settings, VoiceMode, changed_fields, load as load_settings,
+    save_changes,
+)
+from .settings_screen import SettingsScreen
 from .storage import Store, connect
 from .tools import build_exa_tool, exa_key_present
 from .turn import WRITING, TurnStream, strip_tool_noise
@@ -42,7 +49,6 @@ from .widgets import AssistantTurn, PromptArea, StatusBar, UserTurn
 HELP = """[b]commands[/b]
   [cyan]/new[/]              start a new conversation (also Ctrl+N)
   [cyan]/system <text>[/]    set or replace the system prompt
-  [cyan]/think[/]            toggle whether thinking panes are shown
   [cyan]/help[/]             this list
   [cyan]/exit[/], [cyan]/quit[/]      leave"""
 
@@ -147,19 +153,83 @@ class _Debouncer:
         return fire
 
 
+_DEFAULT_KEY_DELAY_S = 0.5
+
+# Hold-to-talk gaps. Before the first auto-repeat we must wait the OS initial-repeat delay D
+# plus a margin (a held key is silent until repeat begins at ~D). Once a repeat confirms the
+# burst is live, a short gap means release — crisp and independent of D. See ADR-0002.
+HOLD_INITIAL_MARGIN_S = 0.30
+HOLD_RELEASE_GAP_ACTIVE_S = 0.20
+
+
+def keyboard_initial_delay_s() -> float:
+    """OS initial key-repeat delay in seconds, or a safe default if unavailable.
+    Windows SPI_GETKEYBOARDDELAY returns 0-3 → 250/500/750/1000 ms."""
+    SPI_GETKEYBOARDDELAY = 0x0016
+    try:
+        value = ctypes.c_int()
+        ok = ctypes.windll.user32.SystemParametersInfoW(
+            SPI_GETKEYBOARDDELAY, 0, ctypes.byref(value), 0
+        )
+        if ok and 0 <= value.value <= 3:
+            return 0.25 * (value.value + 1)
+    except Exception:  # pragma: no cover - non-Windows / restricted env falls back
+        pass
+    return _DEFAULT_KEY_DELAY_S
+
+
+class _HoldController:
+    """Maps a Ctrl+R auto-repeat burst to record start/stop, inferring 'release' from a gap in
+    the burst (terminals expose no key-release; see ADR-0002). Pure and clock-injected: the App
+    feeds it key events and timer ticks and acts on the returned signals."""
+
+    def __init__(self, initial_delay_s: float) -> None:
+        self._before_gap = initial_delay_s + HOLD_INITIAL_MARGIN_S
+        self._active_gap = HOLD_RELEASE_GAP_ACTIVE_S
+        self._recording = False
+        self._repeating = False
+        self._last_key = 0.0
+
+    def reset(self) -> None:
+        """Re-arm: clear recording/repeating so the next on_key starts a fresh recording."""
+        self._recording = False
+        self._repeating = False
+
+    @property
+    def recording(self) -> bool:
+        return self._recording
+
+    def on_key(self, now: float) -> bool:
+        """A Ctrl+R event. Returns True only on the first press (caller should start recording);
+        later events are auto-repeat and confirm the burst is live."""
+        self._last_key = now
+        if not self._recording:
+            self._recording = True
+            self._repeating = False
+            return True
+        self._repeating = True
+        return False
+
+    def expired(self, now: float) -> bool:
+        """Poll tick. Returns True once the release gap has elapsed (caller should stop)."""
+        if not self._recording:
+            return False
+        gap = self._active_gap if self._repeating else self._before_gap
+        if now - self._last_key > gap:
+            self._recording = False
+            self._repeating = False
+            return True
+        return False
+
+
 class Config:
     def __init__(
-        self, url, model, system, temperature, max_tokens, top_p,
-        thinking_budget=None, db_path=None, web=True, memory=True,
+        self, url, model, system, db_path=None, web=True, memory=True,
         voice=True, whisper_bin=None, whisper_model=None, whisper_url=None,
     ):
         self.url = url
         self.model = model
         self.system = system
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.top_p = top_p
-        self.thinking_budget = thinking_budget
         self.db_path = db_path
         self.web = web
         self.memory = memory
@@ -176,20 +246,23 @@ class LlamaTUI(App):
     BINDINGS = [
         Binding("ctrl+n", "new_chat", "New"),
         Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
-        Binding("ctrl+t", "toggle_thinking", "Thinking"),
+        Binding("ctrl+comma", "open_settings", "Settings"),
         Binding("ctrl+d", "delete_chat", "Delete"),
         Binding("ctrl+r", "dictate", "Dictate"),
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, cli_overrides: dict | None = None) -> None:
         super().__init__()
         self.config = config
-        self.show_thinking = True
+        self._cli_overrides = cli_overrides or {}
+        self.settings = DEFAULTS                 # replaced with the resolved value in on_mount
         self.model_label = humanize_model_name(config.model)
         self.context_window: int | None = None
         self.agent = None
+        self._instructions: str = ""
+        self._tools: list = []
         self._busy = False
         self.store: Store | None = None
         self.conversation: Conversation | None = None
@@ -201,6 +274,9 @@ class LlamaTUI(App):
         self.voice_enabled = False
         self._cap_timer = None
         self._dictate_debounce = _Debouncer(DICTATE_DEBOUNCE_S)
+        self._key_delay_s = keyboard_initial_delay_s()
+        self._hold = _HoldController(self._key_delay_s)
+        self._hold_timer = None
 
     # ---- setup -----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -216,6 +292,7 @@ class LlamaTUI(App):
         yield Footer()
 
     async def on_mount(self) -> None:
+        self.settings = load_settings(paths.settings_path(), self._cli_overrides)
         # One shared connection: Store owns conversations, KnowledgeGraph owns the graph.
         conn = connect(self.config.db_path)
         self.store = Store(conn)
@@ -316,7 +393,10 @@ class LlamaTUI(App):
         if self.memory is not None:
             self.memory.attach_embedder(embedder)
 
-    def _rebuild_agent(self) -> None:
+    def _build_instructions(self) -> None:
+        """Compose the semi-volatile system prompt + gather the conversation-stable tools.
+        Called only at conversation boundaries; the result is cached so a mid-conversation
+        sampling change can rebuild the agent without recomputing the prompt (cache prefix)."""
         tools: list = []
         tool_notes: list[str] = []
         if self.web_enabled:
@@ -327,27 +407,34 @@ class LlamaTUI(App):
             tools.extend(self.memory.build_tools())
             tool_notes.append(MEMORY_GUIDANCE)
             ambient = self.memory.preamble()
-        # One tight "Your tools" section instead of several large blocks.
         capabilities = (
             ["Your tools (use them deliberately):\n\n" + "\n\n".join(tool_notes)] if tool_notes else []
         )
-        # The builder guarantees the volatile date line lands last (cache-prefix invariant).
-        instructions = build_instructions(
+        self._instructions = build_instructions(
             persona=self.conversation.system_prompt or DEFAULT_SYSTEM,
             capabilities=capabilities,
             ambient=ambient,
             volatile=_date_line(),
         )
+        self._tools = tools
+
+    def _apply_agent(self) -> None:
+        """Build the agent from the cached instructions/tools + current sampling settings.
+        Safe mid-stream: the generate worker holds the old agent's iterator (see CONTEXT.md)."""
         self.agent = build_agent(
             base_url=self.config.url,
             model=self.config.model,
-            instructions=instructions or None,
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-            top_p=self.config.top_p,
-            thinking_budget=self.config.thinking_budget,
-            tools=tools or None,
+            instructions=self._instructions or None,
+            temperature=self.settings.temperature,
+            max_tokens=self.settings.max_tokens,
+            top_p=self.settings.top_p,
+            thinking_budget=self.settings.thinking_budget,
+            tools=self._tools or None,
         )
+
+    def _rebuild_agent(self) -> None:
+        self._build_instructions()
+        self._apply_agent()
 
     # ---- helpers ---------------------------------------------------------
     @property
@@ -397,8 +484,6 @@ class LlamaTUI(App):
             self._write_system(HELP)
         elif cmd in ("/new", "/reset"):
             self.action_new_chat()
-        elif cmd == "/think":
-            self.action_toggle_thinking()
         elif cmd == "/system":
             self.conversation.system_prompt = rest or None
             self._rebuild_agent()
@@ -409,7 +494,7 @@ class LlamaTUI(App):
     async def _send(self, text: str) -> None:
         await self.transcript.mount(UserTurn(text))
         self.conversation.append_user(text)
-        turn = AssistantTurn(show_thinking=self.show_thinking)
+        turn = AssistantTurn(show_thinking=self.settings.show_thinking)
         await self.transcript.mount(turn)
         self.transcript.scroll_end(animate=False)
         self.generate(turn, text)
@@ -522,7 +607,7 @@ class LlamaTUI(App):
             if row["role"] == "user":
                 await self.transcript.mount(UserTurn(row["content"]))
             else:
-                turn = AssistantTurn(show_thinking=self.show_thinking)
+                turn = AssistantTurn(show_thinking=self.settings.show_thinking)
                 await self.transcript.mount(turn)
                 line = None
                 if row["metrics"]:
@@ -575,11 +660,17 @@ class LlamaTUI(App):
         self.action_dictate()
 
     def action_dictate(self) -> None:
-        # Collapse held-key auto-repeat to a single toggle (see _Debouncer).
-        if not self._dictate_debounce.should_fire(time.monotonic()):
-            return
         if self.dictation is None:
             self._voice_note("voice off — run: llamatui --setup-voice")
+            return
+        if self.settings.voice_mode is VoiceMode.HOLD:
+            self._dictate_hold()
+        else:
+            self._dictate_toggle()
+
+    def _dictate_toggle(self) -> None:
+        # Collapse held-key auto-repeat to a single toggle (see _Debouncer).
+        if not self._dictate_debounce.should_fire(time.monotonic()):
             return
         self.dictation.toggle()
         if self.dictation.state is State.RECORDING:
@@ -588,11 +679,33 @@ class LlamaTUI(App):
             self._cap_timer.stop()
             self._cap_timer = None
 
+    def _dictate_hold(self) -> None:
+        if self._hold.on_key(time.monotonic()):       # first press → start recording
+            self.dictation.start()
+            self._cap_timer = self.set_timer(120.0, self._cap_stop)
+            self._hold_timer = self.set_interval(0.05, self._hold_tick)
+
+    def _hold_tick(self) -> None:
+        if self._hold.expired(time.monotonic()):
+            self._stop_hold_timer()
+            if self._cap_timer is not None:
+                self._cap_timer.stop()
+                self._cap_timer = None
+            if self.dictation is not None:
+                self.dictation.stop()
+
+    def _stop_hold_timer(self) -> None:
+        if self._hold_timer is not None:
+            self._hold_timer.stop()
+            self._hold_timer = None
+
     def _cap_stop(self) -> None:
         self._cap_timer = None
+        self._stop_hold_timer()
         if self.dictation is not None and self.dictation.state is State.RECORDING:
             self._voice_note("recording stopped (max length)")
-            self.dictation.toggle()
+            self.dictation.stop()
+        self._hold.reset()
 
     def _insert_transcript(self, text: str) -> None:
         prompt = self.query_one("#prompt", PromptArea)
@@ -611,13 +724,29 @@ class LlamaTUI(App):
         self.query_one("#status", StatusBar).show(voice=msg)
         self.set_timer(3.0, lambda: self.query_one("#status", StatusBar).show(voice=""))
 
-    def action_toggle_thinking(self) -> None:
-        self.show_thinking = not self.show_thinking
-        for turn in self.query(AssistantTurn):
-            turn.set_thinking_visible(self.show_thinking)
-        self._write_system(
-            f"[dim](thinking panes {'shown' if self.show_thinking else 'hidden'})[/]"
-        )
+    def action_open_settings(self) -> None:
+        self.push_screen(SettingsScreen(self.settings), self._on_settings_closed)
+
+    def _on_settings_closed(self, result: "Settings | None") -> None:
+        if result is None:
+            return
+        changed = changed_fields(self.settings, result)
+        if not changed:
+            return
+        self.settings = result
+        if changed.keys() & SAMPLING_FIELDS:
+            self._apply_agent()                       # cached instructions → cache prefix intact
+        if "show_thinking" in changed:
+            for turn in self.query(AssistantTurn):
+                turn.set_thinking_visible(result.show_thinking)
+        if "voice_mode" in changed and self.dictation is not None:
+            self.dictation.cancel()                   # discard any in-flight recording
+            self._stop_hold_timer()
+            self._hold.reset()
+        try:
+            save_changes(paths.settings_path(), changed)
+        except OSError as exc:
+            self._voice_note(f"settings not saved: {exc}")
 
     def action_toggle_sidebar(self) -> None:
         sidebar = self.query_one("#sidebar")

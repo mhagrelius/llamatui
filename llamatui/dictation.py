@@ -75,12 +75,29 @@ class Dictation:
         self._state = s
         self._on_state(s)
 
-    # ---- the one public verb --------------------------------------------
-    def toggle(self) -> None:
+    # ---- public verbs ---------------------------------------------------
+    def start(self) -> None:
+        """idle → recording; no-op if already recording or transcribing."""
         if self._state is State.IDLE:
             self._start()
-        elif self._state is State.RECORDING:
+
+    def stop(self) -> None:
+        """recording → transcribing (min-duration guard applies); no-op otherwise."""
+        if self._state is State.RECORDING:
             self._stop()
+
+    def cancel(self) -> None:
+        """recording → idle, discarding the audio without transcribing; no-op otherwise.
+        Used when voice_mode changes mid-recording so the next dictation starts clean."""
+        if self._state is State.RECORDING:
+            self._rec.stop()
+            self._set(State.IDLE)
+
+    def toggle(self) -> None:
+        if self._state is State.IDLE:
+            self.start()
+        elif self._state is State.RECORDING:
+            self.stop()
         else:  # TRANSCRIBING
             self._on_note("still transcribing…")
 

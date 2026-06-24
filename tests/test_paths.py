@@ -14,3 +14,9 @@ def test_default_whisper_dir_under_user_data_dir():
 
 def test_db_and_whisper_share_root():
     assert storage.default_db_path().parent == paths.user_data_dir()
+
+
+def test_settings_path_under_user_data_dir():
+    from llamatui import paths
+    assert paths.settings_path().parent == paths.user_data_dir()
+    assert paths.settings_path().name == "settings.json"

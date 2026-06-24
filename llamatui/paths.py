@@ -19,3 +19,8 @@ def user_data_dir() -> Path:
 def default_whisper_dir() -> Path:
     """Where ``llamatui --setup-voice`` installs whisper-server + the model."""
     return user_data_dir() / "whisper"
+
+
+def settings_path() -> Path:
+    """Where the persisted Settings file lives (shares the per-user data root)."""
+    return user_data_dir() / "settings.json"

@@ -54,6 +54,8 @@ Point it somewhere else, or change defaults:
 uv run llamatui --url http://127.0.0.1:8080 --system "You are concise." --temp 0.7
 ```
 
+The sampling flags (`--temp`, `--top-p`, `--max-tokens`, `--thinking-budget`) default from the saved settings file; CLI flags override for that run only.
+
 ### Web search (Exa)
 
 The model can call [Exa](https://exa.ai)'s hosted web-search MCP server on its own when a
@@ -120,7 +122,7 @@ whisper.cpp `whisper-server` (CUDA), in its own folder under the user-data dir.
   `llamatui --setup-voice`.
 - Capture uses your **default** input device. Set the right default mic in Windows sound
   settings if dictation is silent.
-- Flags: `--no-voice` (disable), `--whisper-bin PATH`, `--whisper-model PATH`,
+- Flags: `--no-voice` (disable), `--voice-mode {toggle,hold}` (voice input mode; toggle is default), `--whisper-bin PATH`, `--whisper-model PATH`,
   `--whisper-url URL` (use an already-running whisper-server instead of spawning one).
 
 ### Where conversations are stored
@@ -138,10 +140,14 @@ Conversations persist to a SQLite file under your user data dir
 | `Ctrl+B`      | toggle the conversation sidebar     |
 | `Ctrl+D`      | delete the highlighted conversation |
 | `Esc`         | cancel the in-flight generation     |
-| `Ctrl+T`      | collapse/expand thinking panes      |
+| `Ctrl+,`      | open the settings panel             |
 | `Ctrl+C` / `Ctrl+Q` | quit                          |
 
 Click a conversation in the sidebar (or highlight it and press `Enter`) to reopen it.
+
+### Settings panel
+
+Runtime preferences — thinking budget, temperature, top-p, max tokens, voice input mode (toggle vs hold-to-talk), and thinking-pane visibility — live in the settings panel (`Ctrl+,`) and persist to `%LOCALAPPDATA%\llamatui\settings.json`. CLI flags override the saved values for one run. Note: the thinking-budget setting is honored only when llama-server was started without `--reasoning-budget`.
 
 ## Slash commands
 
@@ -149,7 +155,6 @@ Type these in the prompt:
 
 - `/new` — start a new conversation
 - `/system <text>` — set/replace the system prompt
-- `/think` — toggle whether thinking panes are shown
 - `/help` — list commands
 - `/exit`, `/quit` — leave
 

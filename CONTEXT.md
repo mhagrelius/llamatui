@@ -138,3 +138,9 @@ boundaries** (mount, `/system`, new chat, open conversation) — never mid-turn.
 conversation the whole prompt is constant and its KV prefix is reused; a fact the model writes
 mid-turn shows up in Background/Recent at the next conversation switch (and is findable via
 `recall` in the meantime).
+
+The agent build is split for this: `_build_instructions` composes the (semi-volatile) system
+prompt and caches it + the conversation-stable tools at conversation boundaries only;
+`_apply_agent` rebuilds the agent from those caches plus the current **Settings** sampling. A
+mid-conversation sampling change calls `_apply_agent` alone, so the prompt — and its KV prefix —
+never changes. This is also why opening the settings panel mid-stream is safe.
