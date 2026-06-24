@@ -84,7 +84,7 @@ fused with Reciprocal Rank Fusion so paraphrases match too. Semantic search is a
 extra — it runs a small embedding model **in-process** (no server):
 
 ```sh
-uv sync --extra semantic    # pulls fastembed; first recall downloads a small model once
+uv sync --extra semantic    # pulls fastembed; first recall downloads a small model once (already included if you installed via scripts/install.ps1)
 ```
 
 Without it, recall is keyword-only. Everything is stored right in your conversations database;

@@ -12,7 +12,7 @@ try {
     uv tool install --force ".[voice,semantic]"
     if (-not $SkipVoice) {
         Write-Host "Fetching whisper-server + model (~500 MB) into the user-data dir..."
-        uv run python -m llamatui --setup-voice   # PATH-independent: uses the project env
+        uv run python -m llamatui --setup-voice   # PATH-independent: runs via uv in the repo .venv, no need for llamatui to be on PATH yet
     }
 }
 finally {

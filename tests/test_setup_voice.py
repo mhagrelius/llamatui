@@ -61,3 +61,19 @@ def test_missing_server_binary_raises(tmp_path):
     dl = _make_download(_zip_bytes(["Release/not-the-server.exe"]))
     with pytest.raises(RuntimeError, match="whisper-server.exe"):
         fetch_whisper(tmp_path, download=dl)
+
+
+def test_failed_model_download_leaves_no_partial(tmp_path):
+    def download(url, dest):
+        from pathlib import Path
+        if url == WHISPER_RELEASE_URL:
+            Path(dest).write_bytes(_zip_bytes(["Release/whisper-server.exe"]))
+        else:
+            Path(dest).write_bytes(b"partialdata")   # simulate a partial write...
+            raise RuntimeError("network died")        # ...then the download dies
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        fetch_whisper(tmp_path, download=download)
+    assert not (tmp_path / MODEL_NAME).exists()        # no false-positive corrupt model
+    assert not (tmp_path / (MODEL_NAME + ".part")).exists()

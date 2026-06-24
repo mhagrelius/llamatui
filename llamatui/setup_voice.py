@@ -7,6 +7,7 @@ against the real binary on 2026-06-24 (RTX 5090 / Blackwell; the CUDA 12.4 build
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import zipfile
@@ -28,7 +29,7 @@ SERVER_EXE = "whisper-server.exe"
 def _http_download(url: str, dest: Path) -> None:
     with httpx.stream("GET", url, follow_redirects=True, timeout=None) as r:
         r.raise_for_status()
-        with open(dest, "wb") as f:
+        with Path(dest).open("wb") as f:
             for chunk in r.iter_bytes():
                 f.write(chunk)
 
@@ -66,6 +67,12 @@ def fetch_whisper(dest: Path, *, download: Callable[[str, Path], None] = _http_d
 
     model = dest / MODEL_NAME
     if not model.exists():
-        download(MODEL_URL, model)
+        partial = dest / (MODEL_NAME + ".part")
+        try:
+            download(MODEL_URL, partial)
+            os.replace(partial, model)
+        except BaseException:
+            partial.unlink(missing_ok=True)
+            raise
 
     return exe

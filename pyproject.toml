@@ -19,8 +19,7 @@ dependencies = [
 semantic = ["fastembed>=0.3"]
 
 # Voice dictation (local STT capture via sounddevice). Optional: without it, dictation is off.
-# Install with `uv sync --extra voice`. Also needs the whisper-server binary + model — see
-# scripts/get-whisper.ps1.
+# Installed by scripts/install.ps1; fetch the whisper-server binary + model with: llamatui --setup-voice
 voice = ["sounddevice>=0.4"]
 
 [project.scripts]
