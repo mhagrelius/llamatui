@@ -116,3 +116,50 @@ def test_save_changes_ignores_unknown_keys(tmp_path):
     data = json.loads(p.read_text(encoding="utf-8"))
     assert "bogus" not in data
     assert data["temperature"] == 0.4
+
+
+from llamatui.settings import parse_form
+
+
+def _raw(**over):
+    base = {"thinking_budget": "8192", "temperature": "0.7", "top_p": "", "max_tokens": "32000"}
+    base.update(over)
+    return base
+
+
+def test_parse_form_ok_blank_top_p_is_none():
+    s, errors = parse_form(_raw(), DEFAULTS)
+    assert errors == {}
+    assert s.thinking_budget == 8192 and s.temperature == 0.7
+    assert s.top_p is None and s.max_tokens == 32000
+
+
+def test_parse_form_carries_base_nontext_fields():
+    base = Settings(voice_mode=VoiceMode.HOLD, show_thinking=False)
+    s, errors = parse_form(_raw(), base)
+    assert s.voice_mode is VoiceMode.HOLD and s.show_thinking is False
+
+
+def test_parse_form_top_p_value_parsed():
+    s, errors = parse_form(_raw(top_p="0.95"), DEFAULTS)
+    assert errors == {} and s.top_p == 0.95
+
+
+def test_parse_form_rejects_non_numeric():
+    s, errors = parse_form(_raw(temperature="hot"), DEFAULTS)
+    assert s is None and "temperature" in errors
+
+
+def test_parse_form_rejects_out_of_range():
+    s, errors = parse_form(_raw(temperature="9"), DEFAULTS)
+    assert s is None and "temperature" in errors
+
+
+def test_parse_form_thinking_budget_allows_minus_one_but_not_minus_two():
+    assert parse_form(_raw(thinking_budget="-1"), DEFAULTS)[0].thinking_budget == -1
+    assert parse_form(_raw(thinking_budget="-2"), DEFAULTS)[1].get("thinking_budget")
+
+
+def test_parse_form_max_tokens_must_be_positive():
+    s, errors = parse_form(_raw(max_tokens="0"), DEFAULTS)
+    assert s is None and "max_tokens" in errors

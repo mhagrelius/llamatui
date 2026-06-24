@@ -9,7 +9,7 @@ save. It is pure — no Textual, no agent, no keyboard — so its interface is i
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields as _dataclass_fields
+from dataclasses import dataclass, fields as _dataclass_fields, replace
 from enum import Enum
 from pathlib import Path
 
@@ -118,3 +118,54 @@ def changed_fields(old: Settings, new: Settings) -> dict:
         for name in _FIELD_NAMES
         if getattr(old, name) != getattr(new, name)
     }
+
+
+def parse_form(raw: dict, base: Settings) -> "tuple[Settings | None, dict]":
+    """Validate the panel's four numeric text inputs. Returns (settings, {}) on success or
+    (None, {field: message}) on error. `base` supplies voice_mode / show_thinking, already typed
+    by their RadioSet / Switch controls."""
+    errors: dict = {}
+
+    def _int(name, lo):
+        text = str(raw.get(name, "")).strip()
+        try:
+            value = int(text)
+        except ValueError:
+            errors[name] = "must be a whole number"
+            return None
+        if value < lo:
+            errors[name] = f"must be ≥ {lo}"
+            return None
+        return value
+
+    def _float(name, lo, hi, allow_blank=False):
+        text = str(raw.get(name, "")).strip()
+        if allow_blank and text == "":
+            return None
+        try:
+            value = float(text)
+        except ValueError:
+            errors[name] = "must be a number"
+            return None
+        if not (lo <= value <= hi):
+            errors[name] = f"must be {lo}–{hi}"
+            return None
+        return value
+
+    thinking_budget = _int("thinking_budget", lo=-1)
+    temperature = _float("temperature", 0.0, 2.0)
+    top_p = _float("top_p", 0.0, 1.0, allow_blank=True)
+    max_tokens = _int("max_tokens", lo=1)
+
+    if errors:
+        return None, errors
+    return (
+        replace(
+            base,
+            thinking_budget=thinking_budget,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+        ),
+        {},
+    )
