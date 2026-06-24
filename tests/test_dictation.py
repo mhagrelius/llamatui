@@ -126,3 +126,44 @@ def test_120s_cap_truncates_wav():
         assert w.getnframes() == MAX_SAMPLES
         assert w.getframerate() == SAMPLE_RATE
         assert w.getnchannels() == 1
+
+
+def test_start_then_stop_transcribes():
+    rec = FakeRecorder(pcm=_pcm(SAMPLE_RATE))
+    stt = FakeTranscriber(text="explicit verbs")
+    d, texts, states, notes = _make(rec, stt)
+    d.start()
+    assert d.state is State.RECORDING
+    d.start()                                   # idempotent: still one recording
+    assert d.state is State.RECORDING
+    d.stop()
+    assert d.state is State.IDLE
+    assert texts == ["explicit verbs"]
+
+
+def test_stop_while_idle_is_noop():
+    rec = FakeRecorder(pcm=_pcm(SAMPLE_RATE))
+    stt = FakeTranscriber()
+    d, texts, *_ = _make(rec, stt)
+    d.stop()                                    # nothing recording
+    assert d.state is State.IDLE
+    assert stt.last_wav is None
+
+
+def test_cancel_discards_without_transcribing():
+    rec = FakeRecorder(pcm=_pcm(SAMPLE_RATE))
+    stt = FakeTranscriber()
+    d, texts, *_ = _make(rec, stt)
+    d.start()
+    assert rec.started is True
+    d.cancel()
+    assert d.state is State.IDLE
+    assert rec.started is False                 # mic stream closed
+    assert texts == []
+    assert stt.last_wav is None                 # never transcribed
+
+
+def test_cancel_while_idle_is_noop():
+    d, texts, *_ = _make(FakeRecorder(), FakeTranscriber())
+    d.cancel()
+    assert d.state is State.IDLE
