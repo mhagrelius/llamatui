@@ -121,6 +121,10 @@ class WhisperServer:
                     [str(bin_abs), "--model", str(self._model.resolve()),
                      "--host", "127.0.0.1", "--port", str(port)],
                     cwd=str(bin_abs.parent),
+                    # whisper-server is very chatty on stdout/stderr; without this its CUDA/model
+                    # logs are inherited by the terminal and trample the Textual UI.
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
             except Exception as exc:
                 raise WhisperError(f"failed to spawn whisper-server: {exc}") from exc
