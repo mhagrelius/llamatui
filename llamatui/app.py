@@ -27,6 +27,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
 from . import metrics as M
+from . import paths
 from .client import build_agent, detect_context_window, detect_model_id, humanize_model_name
 from .conversation import Conversation
 from .dictation import Dictation, State, build_recorder
@@ -34,6 +35,10 @@ from .graph import KnowledgeGraph, build_embedder
 from .instructions import build_instructions
 from .memory import Memory
 from .paths import default_whisper_dir
+from .settings import (
+    DEFAULTS, SAMPLING_FIELDS, Settings, VoiceMode, changed_fields, load as load_settings,
+    save_changes,
+)
 from .storage import Store, connect
 from .tools import build_exa_tool, exa_key_present
 from .turn import WRITING, TurnStream, strip_tool_noise
@@ -214,17 +219,12 @@ class _HoldController:
 
 class Config:
     def __init__(
-        self, url, model, system, temperature, max_tokens, top_p,
-        thinking_budget=None, db_path=None, web=True, memory=True,
+        self, url, model, system, db_path=None, web=True, memory=True,
         voice=True, whisper_bin=None, whisper_model=None, whisper_url=None,
     ):
         self.url = url
         self.model = model
         self.system = system
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.top_p = top_p
-        self.thinking_budget = thinking_budget
         self.db_path = db_path
         self.web = web
         self.memory = memory
@@ -248,13 +248,17 @@ class LlamaTUI(App):
         Binding("ctrl+q", "quit", "Quit"),
     ]
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, cli_overrides: dict | None = None) -> None:
         super().__init__()
         self.config = config
+        self._cli_overrides = cli_overrides or {}
+        self.settings = DEFAULTS                 # replaced with the resolved value in on_mount
         self.show_thinking = True
         self.model_label = humanize_model_name(config.model)
         self.context_window: int | None = None
         self.agent = None
+        self._instructions: str = ""
+        self._tools: list = []
         self._busy = False
         self.store: Store | None = None
         self.conversation: Conversation | None = None
@@ -266,6 +270,9 @@ class LlamaTUI(App):
         self.voice_enabled = False
         self._cap_timer = None
         self._dictate_debounce = _Debouncer(DICTATE_DEBOUNCE_S)
+        self._key_delay_s = keyboard_initial_delay_s()
+        self._hold = _HoldController(self._key_delay_s)
+        self._hold_timer = None
 
     # ---- setup -----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -281,6 +288,7 @@ class LlamaTUI(App):
         yield Footer()
 
     async def on_mount(self) -> None:
+        self.settings = load_settings(paths.settings_path(), self._cli_overrides)
         # One shared connection: Store owns conversations, KnowledgeGraph owns the graph.
         conn = connect(self.config.db_path)
         self.store = Store(conn)
@@ -381,7 +389,10 @@ class LlamaTUI(App):
         if self.memory is not None:
             self.memory.attach_embedder(embedder)
 
-    def _rebuild_agent(self) -> None:
+    def _build_instructions(self) -> None:
+        """Compose the semi-volatile system prompt + gather the conversation-stable tools.
+        Called only at conversation boundaries; the result is cached so a mid-conversation
+        sampling change can rebuild the agent without recomputing the prompt (cache prefix)."""
         tools: list = []
         tool_notes: list[str] = []
         if self.web_enabled:
@@ -392,27 +403,34 @@ class LlamaTUI(App):
             tools.extend(self.memory.build_tools())
             tool_notes.append(MEMORY_GUIDANCE)
             ambient = self.memory.preamble()
-        # One tight "Your tools" section instead of several large blocks.
         capabilities = (
             ["Your tools (use them deliberately):\n\n" + "\n\n".join(tool_notes)] if tool_notes else []
         )
-        # The builder guarantees the volatile date line lands last (cache-prefix invariant).
-        instructions = build_instructions(
+        self._instructions = build_instructions(
             persona=self.conversation.system_prompt or DEFAULT_SYSTEM,
             capabilities=capabilities,
             ambient=ambient,
             volatile=_date_line(),
         )
+        self._tools = tools
+
+    def _apply_agent(self) -> None:
+        """Build the agent from the cached instructions/tools + current sampling settings.
+        Safe mid-stream: the generate worker holds the old agent's iterator (see CONTEXT.md)."""
         self.agent = build_agent(
             base_url=self.config.url,
             model=self.config.model,
-            instructions=instructions or None,
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-            top_p=self.config.top_p,
-            thinking_budget=self.config.thinking_budget,
-            tools=tools or None,
+            instructions=self._instructions or None,
+            temperature=self.settings.temperature,
+            max_tokens=self.settings.max_tokens,
+            top_p=self.settings.top_p,
+            thinking_budget=self.settings.thinking_budget,
+            tools=self._tools or None,
         )
+
+    def _rebuild_agent(self) -> None:
+        self._build_instructions()
+        self._apply_agent()
 
     # ---- helpers ---------------------------------------------------------
     @property

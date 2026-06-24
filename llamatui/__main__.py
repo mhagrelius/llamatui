@@ -3,8 +3,33 @@
 from __future__ import annotations
 
 import argparse
+import warnings
+
+# agent_framework marks SkillResource/MemoryStore as experimental and emits an
+# ExperimentalWarning the moment those classes are imported. We knowingly depend
+# on them, so silence the noise. The message filter must be registered *before*
+# agent_framework is first imported (including the category import below, which
+# itself pulls in the package), so it goes first.
+warnings.filterwarnings("ignore", message=r".*is experimental and may change.*")
+try:
+    from agent_framework._feature_stage import FeatureStageWarning
+
+    warnings.filterwarnings("ignore", category=FeatureStageWarning)
+except Exception:  # pragma: no cover - message filter above already covers it
+    pass
 
 from .app import Config, LlamaTUI
+
+
+def cli_overrides(args) -> dict:
+    """Map parsed args to the precedence dict settings.load expects (unset → None sentinel)."""
+    return {
+        "thinking_budget": args.thinking_budget,
+        "temperature": args.temp,
+        "top_p": args.top_p,
+        "max_tokens": args.max_tokens,
+        "voice_mode": args.voice_mode,
+    }
 
 
 def main() -> None:
@@ -15,13 +40,16 @@ def main() -> None:
     ap.add_argument("--url", default="http://127.0.0.1:8080", help="llama-server base URL")
     ap.add_argument("--model", default="local", help="model id (auto-detected from the server if possible)")
     ap.add_argument("--system", default=None, help="initial system prompt")
-    ap.add_argument("--temp", type=float, default=0.7, help="sampling temperature")
-    ap.add_argument("--max-tokens", type=int, default=32000, help="max tokens to generate")
-    ap.add_argument("--top-p", type=float, default=None, help="nucleus sampling probability")
+    ap.add_argument("--temp", type=float, default=None, help="sampling temperature (default: 0.7)")
+    ap.add_argument("--max-tokens", type=int, default=None, help="max tokens to generate (default: 32000)")
+    ap.add_argument("--top-p", type=float, default=None, help="nucleus sampling probability (default: off)")
     ap.add_argument(
-        "--thinking-budget", type=int, default=8192,
-        help="max thinking tokens before the server forces the answer (N>0 budget, 0 off, -1 unlimited)",
+        "--thinking-budget", type=int, default=None,
+        help="max thinking tokens (default: 8192; N>0 budget, 0 off, -1 unlimited). "
+             "Honored only if llama-server was started without --reasoning-budget.",
     )
+    ap.add_argument("--voice-mode", choices=["toggle", "hold"], default=None,
+                    help="dictation input mode (default: toggle)")
     ap.add_argument("--db", default=None, help="path to the conversations SQLite file")
     ap.add_argument("--no-web", action="store_true", help="disable the Exa web-search tool")
     ap.add_argument("--no-memory", action="store_true", help="disable the persistent memory tool")
@@ -49,10 +77,6 @@ def main() -> None:
         url=base_url,
         model=args.model,
         system=args.system,
-        temperature=args.temp,
-        max_tokens=args.max_tokens,
-        top_p=args.top_p,
-        thinking_budget=args.thinking_budget,
         db_path=args.db,
         web=not args.no_web,
         memory=not args.no_memory,
@@ -61,7 +85,7 @@ def main() -> None:
         whisper_model=args.whisper_model,
         whisper_url=args.whisper_url,
     )
-    LlamaTUI(config).run()
+    LlamaTUI(config, cli_overrides=cli_overrides(args)).run()
 
 
 if __name__ == "__main__":
