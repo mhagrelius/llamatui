@@ -96,6 +96,11 @@ use these names in code, comments, and reviews rather than inventing new ones.
   shared server it merely connected to. `available()` (binary + model present) is pure
   feature-detection with no spawn; dictation degrades **off** when it is false.
 
+- **paths** — `paths.py` is the single source of truth for per-user on-disk locations
+  (`user_data_dir()`, `default_whisper_dir()`). The conversations **Store** DB and the
+  whisper assets fetched by `llamatui --setup-voice` share this one root, so the app finds
+  them regardless of the current working directory.
+
 ## Architecture stance
 
 The Textual `App` (`app.py`) is a **thin adapter**: it wires widgets, keybindings, and the

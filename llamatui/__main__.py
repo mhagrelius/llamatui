@@ -29,7 +29,17 @@ def main() -> None:
     ap.add_argument("--whisper-bin", default=None, help="path to whisper-server (default: whisper/whisper-server.exe, then PATH)")
     ap.add_argument("--whisper-model", default=None, help="path to the whisper ggml model (default: whisper/ggml-small.en.bin)")
     ap.add_argument("--whisper-url", default=None, help="use an already-running whisper-server at this URL instead of spawning one")
+    ap.add_argument("--setup-voice", action="store_true",
+                    help="download whisper-server + model into the user-data dir, then exit")
     args = ap.parse_args()
+
+    if args.setup_voice:
+        from . import paths, setup_voice
+        dest = paths.default_whisper_dir()
+        print(f"Fetching whisper-server + model into {dest} ...")
+        exe = setup_voice.fetch_whisper(dest)
+        print(f"Done. whisper-server at {exe}")
+        return
 
     base_url = args.url.rstrip("/")
     if not base_url.endswith("/v1"):
