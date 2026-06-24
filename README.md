@@ -90,23 +90,38 @@ uv sync --extra semantic    # pulls fastembed; first recall downloads a small mo
 Without it, recall is keyword-only. Everything is stored right in your conversations database;
 nothing leaves the machine. Disable memory entirely with `--no-memory`.
 
+## Install (run `llamatui` from anywhere)
+
+Requires [uv](https://docs.astral.sh/uv/). From the repo root:
+
+```powershell
+.\scripts\install.ps1            # installs the `llamatui` command + voice/semantic extras,
+                                 # then fetches whisper-server + the model (~500 MB)
+.\scripts\install.ps1 -SkipVoice # ...or skip the whisper download
+```
+
+Then, from any directory:
+
+```powershell
+llamatui                         # start the TUI (needs a running llama-server)
+```
+
+Update later with `uv tool upgrade llamatui`. The conversations DB and the whisper
+assets both live under `%LOCALAPPDATA%\llamatui\`, so they're found no matter where
+you launch from.
+
 ## Voice dictation (optional)
 
 Press **Ctrl+R** in the prompt to start recording, again to stop; the transcribed text
 lands in the input for review and is **never auto-sent**. Transcription runs locally via
-whisper.cpp `whisper-server` (CUDA), reusing nothing from the llama stack — it lives in its
-own `whisper/` folder.
+whisper.cpp `whisper-server` (CUDA), in its own folder under the user-data dir.
 
-Setup:
-
-1. Fetch the binary + model:  `pwsh scripts/get-whisper.ps1`
-2. Install the capture extra:  `uv sync --extra voice`
-3. Run as usual:  `python -m llamatui`  → the banner shows `voice on`.
-
-Flags: `--no-voice` (disable), `--whisper-bin PATH`, `--whisper-model PATH`,
-`--whisper-url URL` (point at an already-running whisper-server instead of spawning one).
-If `sounddevice`, the binary, the model, or a 16 kHz-capable mic is missing, dictation is
-simply off and the banner says so.
+- Voice is set up by `install.ps1` above. To (re)fetch the binary + model on demand:
+  `llamatui --setup-voice`.
+- Capture uses your **default** input device. Set the right default mic in Windows sound
+  settings if dictation is silent.
+- Flags: `--no-voice` (disable), `--whisper-bin PATH`, `--whisper-model PATH`,
+  `--whisper-url URL` (use an already-running whisper-server instead of spawning one).
 
 ### Where conversations are stored
 
