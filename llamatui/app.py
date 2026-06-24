@@ -25,7 +25,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
 from . import metrics as M
-from .client import build_agent, detect_context_window, detect_model_id
+from .client import build_agent, detect_context_window, detect_model_id, humanize_model_name
 from .conversation import Conversation
 from .graph import KnowledgeGraph, build_embedder
 from .instructions import build_instructions
@@ -121,7 +121,7 @@ RENDER_INTERVAL = 0.06
 class Config:
     def __init__(
         self, url, model, system, temperature, max_tokens, top_p,
-        db_path=None, web=True, memory=True,
+        thinking_budget=None, db_path=None, web=True, memory=True,
     ):
         self.url = url
         self.model = model
@@ -129,6 +129,7 @@ class Config:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.top_p = top_p
+        self.thinking_budget = thinking_budget
         self.db_path = db_path
         self.web = web
         self.memory = memory
@@ -151,7 +152,7 @@ class LlamaTUI(App):
         super().__init__()
         self.config = config
         self.show_thinking = True
-        self.model_label = config.model
+        self.model_label = humanize_model_name(config.model)
         self.context_window: int | None = None
         self.agent = None
         self._busy = False
@@ -181,7 +182,7 @@ class LlamaTUI(App):
         detected = detect_model_id(self.config.url)
         if detected:
             self.config.model = detected
-            self.model_label = detected.replace("\\", "/").rsplit("/", 1)[-1]
+            self.model_label = humanize_model_name(detected)
         self.context_window = detect_context_window(self.config.url)
         connected = detected is not None
 
@@ -271,6 +272,7 @@ class LlamaTUI(App):
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
             top_p=self.config.top_p,
+            thinking_budget=self.config.thinking_budget,
             tools=tools or None,
         )
 
