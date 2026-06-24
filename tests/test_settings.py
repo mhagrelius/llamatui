@@ -118,6 +118,14 @@ def test_save_changes_ignores_unknown_keys(tmp_path):
     assert data["temperature"] == 0.4
 
 
+def test_save_changes_is_atomic_no_temp_left(tmp_path):
+    p = tmp_path / "settings.json"
+    save_changes(p, {"temperature": 0.4})
+    assert p.exists()
+    assert not (tmp_path / "settings.json.tmp").exists()
+    assert load(p).temperature == 0.4
+
+
 from llamatui.settings import parse_form
 
 

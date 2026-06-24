@@ -9,6 +9,7 @@ save. It is pure — no Textual, no agent, no keyboard — so its interface is i
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, fields as _dataclass_fields, replace
 from enum import Enum
 from pathlib import Path
@@ -107,8 +108,10 @@ def save_changes(path: Path, changed: dict) -> None:
             data[key] = value.value if isinstance(value, VoiceMode) else value
     data["version"] = 1
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    tmp = path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp, path)
 
 
 def changed_fields(old: Settings, new: Settings) -> dict:

@@ -190,6 +190,11 @@ class _HoldController:
         self._repeating = False
         self._last_key = 0.0
 
+    def reset(self) -> None:
+        """Re-arm: clear recording/repeating so the next on_key starts a fresh recording."""
+        self._recording = False
+        self._repeating = False
+
     @property
     def recording(self) -> bool:
         return self._recording
@@ -700,6 +705,7 @@ class LlamaTUI(App):
         if self.dictation is not None and self.dictation.state is State.RECORDING:
             self._voice_note("recording stopped (max length)")
             self.dictation.stop()
+        self._hold.reset()
 
     def _insert_transcript(self, text: str) -> None:
         prompt = self.query_one("#prompt", PromptArea)
@@ -736,8 +742,11 @@ class LlamaTUI(App):
         if "voice_mode" in changed and self.dictation is not None:
             self.dictation.cancel()                   # discard any in-flight recording
             self._stop_hold_timer()
-            self._hold = _HoldController(self._key_delay_s)
-        save_changes(paths.settings_path(), changed)
+            self._hold.reset()
+        try:
+            save_changes(paths.settings_path(), changed)
+        except OSError as exc:
+            self._voice_note(f"settings not saved: {exc}")
 
     def action_toggle_sidebar(self) -> None:
         sidebar = self.query_one("#sidebar")

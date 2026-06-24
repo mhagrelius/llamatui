@@ -54,3 +54,12 @@ def test_keyboard_initial_delay_is_sane_float():
     v = keyboard_initial_delay_s()
     assert isinstance(v, float)
     assert 0.2 <= v <= 1.0
+
+
+def test_reset_rearms_controller():
+    h = _HoldController(D)
+    h.on_key(0.0)                 # start
+    assert h.recording is True
+    h.reset()
+    assert h.recording is False
+    assert h.on_key(1.0) is True  # next press starts fresh
