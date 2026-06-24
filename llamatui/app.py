@@ -119,6 +119,23 @@ def _date_line() -> str:
 
 RENDER_INTERVAL = 0.06
 
+# Holding Ctrl+R makes the terminal auto-repeat the key (~30-50 ms apart), which would
+# otherwise toggle dictation on/off rapidly (flicker). A leading-edge debounce fires on the
+# first press and swallows the rest of the burst; every event refreshes the timer, so a
+# continuous hold never re-fires until there's a quiet gap longer than the window.
+DICTATE_DEBOUNCE_S = 0.5
+
+
+class _Debouncer:
+    def __init__(self, window_s: float) -> None:
+        self._window = window_s
+        self._last: float | None = None
+
+    def should_fire(self, now: float) -> bool:
+        fire = self._last is None or (now - self._last) >= self._window
+        self._last = now
+        return fire
+
 
 class Config:
     def __init__(
@@ -173,6 +190,7 @@ class LlamaTUI(App):
         self.dictation: Dictation | None = None
         self.voice_enabled = False
         self._cap_timer = None
+        self._dictate_debounce = _Debouncer(DICTATE_DEBOUNCE_S)
 
     # ---- setup -----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -546,6 +564,9 @@ class LlamaTUI(App):
         self.action_dictate()
 
     def action_dictate(self) -> None:
+        # Collapse held-key auto-repeat to a single toggle (see _Debouncer).
+        if not self._dictate_debounce.should_fire(time.monotonic()):
+            return
         if self.dictation is None:
             self._voice_note("voice off — run scripts/get-whisper.ps1 to enable")
             return
