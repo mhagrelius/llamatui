@@ -21,6 +21,14 @@ Invoke-WebRequest -Uri $releaseUrl -OutFile $zipPath
 Expand-Archive -Path $zipPath -DestinationPath $dir -Force
 Remove-Item $zipPath
 
+# The CUDA zips nest everything under a Release/ folder; flatten it so whisper-server.exe, its
+# DLLs, and the model all sit directly in whisper/ (the default --whisper-bin location).
+$nested = Join-Path $dir "Release"
+if (Test-Path $nested) {
+    Get-ChildItem -Path $nested -Force | Move-Item -Destination $dir -Force
+    Remove-Item $nested -Recurse -Force
+}
+
 # Sanity-check the server binary name (older zips shipped "server.exe", newer "whisper-server.exe").
 $serverExe = Get-ChildItem -Path $dir -Filter "*server*.exe" -Recurse | Select-Object -First 1
 if ($serverExe) {
