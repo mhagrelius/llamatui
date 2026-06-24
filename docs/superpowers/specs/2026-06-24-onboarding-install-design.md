@@ -67,6 +67,14 @@ release URLs or the zip layout.
 - The actual byte transfer is the injected `download(url, path)` seam, so tests
   serve a synthetic zip and a tiny model file — **no real network**.
 
+**Concrete target (locked):** `--setup-voice` always passes `default_whisper_dir()`,
+which on Windows resolves to `%LOCALAPPDATA%\llamatui\whisper\` (e.g.
+`C:\Users\<you>\AppData\Local\llamatui\whisper\`). `whisper-server.exe`, its DLLs,
+and `ggml-small.en.bin` all land **directly in that folder** — never the user home
+root, never the repo root. This is the same `…\AppData\Local\llamatui\` root the
+conversations DB already uses. A test asserts the extracted `whisper-server.exe`
+path is under `default_whisper_dir()`.
+
 The release version, asset name, and model URL are module-level constants (the
 same values verified live against the real binary on 2026-06-24).
 
