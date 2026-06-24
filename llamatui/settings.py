@@ -89,9 +89,9 @@ def _read_file(path: Path) -> dict:
 def load(path: Path, cli: dict | None = None) -> Settings:
     """Resolve effective settings: DEFAULTS < saved file < non-None CLI overrides.
     Never writes the file."""
-    merged = DEFAULTS.to_dict()
+    merged = {k: v for k, v in DEFAULTS.to_dict().items() if k != "version"}
     merged.update(_read_file(path))
-    if cli:
+    if cli is not None:
         for key, value in cli.items():
             if value is not None and key in _FIELD_NAMES:
                 merged[key] = value

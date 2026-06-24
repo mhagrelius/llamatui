@@ -102,3 +102,17 @@ def test_changed_fields_reports_only_diffs():
 
 def test_sampling_fields_constant():
     assert SAMPLING_FIELDS == {"thinking_budget", "temperature", "top_p", "max_tokens"}
+
+
+def test_from_dict_non_dict_is_defaults():
+    assert from_dict("not a dict") == DEFAULTS
+    assert from_dict(None) == DEFAULTS
+
+
+def test_save_changes_ignores_unknown_keys(tmp_path):
+    p = tmp_path / "settings.json"
+    save_changes(p, {"bogus": 1, "temperature": 0.4})
+    import json
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert "bogus" not in data
+    assert data["temperature"] == 0.4
