@@ -177,3 +177,12 @@ def test_default_workspace_roundtrips(tmp_path):
     from llamatui.settings import from_dict, Settings
     assert from_dict({"default_workspace": "C:/proj"}).default_workspace == "C:/proj"
     assert Settings().default_workspace is None
+
+
+def test_parse_form_preserves_default_workspace(tmp_path):
+    from llamatui.settings import parse_form, Settings
+    base = Settings(default_workspace="C:/proj")
+    out, errors = parse_form(
+        {"thinking_budget": "10", "temperature": "0.7", "top_p": "", "max_tokens": "100"}, base
+    )
+    assert errors == {} and out.default_workspace == "C:/proj"

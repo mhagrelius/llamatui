@@ -566,6 +566,8 @@ class LlamaTUI(App):
                 turn.set_thinking_visible(result.show_thinking)
         if "voice_mode" in changed and self.voice is not None:
             self.voice.set_mode(result.voice_mode)    # discards any in-flight recording, re-arms
+        if "default_workspace" in changed:
+            self._rebuild_workspace()
         try:
             save_changes(paths.settings_path(), changed)
         except OSError as exc:

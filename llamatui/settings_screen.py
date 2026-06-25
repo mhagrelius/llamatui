@@ -40,6 +40,8 @@ class SettingsScreen(ModalScreen["Settings | None"]):
             with Horizontal(id="show-thinking-row"):
                 yield Label("Show thinking panes")
                 yield Switch(value=s.show_thinking, id="show_thinking")
+            yield Label("Default workspace  (path, blank = none)")
+            yield Input(value=s.default_workspace or "", id="default_workspace")
             yield Static("", id="settings-error")
             with Horizontal(id="settings-buttons"):
                 yield Button("Save", variant="primary", id="save")
@@ -61,7 +63,9 @@ class SettingsScreen(ModalScreen["Settings | None"]):
         radio = self.query_one("#voice_mode", RadioSet)
         voice = VoiceMode.HOLD if radio.pressed_index == 1 else VoiceMode.TOGGLE
         show = self.query_one("#show_thinking", Switch).value
-        base = replace(self._current, voice_mode=voice, show_thinking=show)
+        ws_raw = self.query_one("#default_workspace", Input).value.strip()
+        workspace = ws_raw if ws_raw else None
+        base = replace(self._current, voice_mode=voice, show_thinking=show, default_workspace=workspace)
         result, errors = parse_form(raw, base)
         if errors:
             message = "   ".join(f"{name}: {msg}" for name, msg in errors.items())
