@@ -16,6 +16,9 @@ from typing import Annotated
 from agent_framework import FunctionTool
 
 
+READ_CAP = 100_000  # chars of file content surfaced to the model
+
+
 FILESYSTEM_GUIDANCE = (
     "Filesystem (your workspace): use list_dir / read_file / search to inspect files; "
     "write_file / move / delete to change them; run_command to run shell commands. Reads are "
@@ -71,6 +74,23 @@ class Workspace:
             return "(empty)"
         return "\n".join(e.name + ("/" if e.is_dir() else "") for e in entries)
 
+    def read_file(self, path: Annotated[str, "Workspace-relative file to read."]) -> str:
+        target = self._confined(path)
+        if target is None:
+            return OUTSIDE_MSG(self.root)
+        if not target.is_file():
+            return f"Not a file: {path}"
+        raw = target.read_bytes()
+        if b"\x00" in raw[:4096]:
+            return f"Binary file ({len(raw)} bytes); not shown."
+        text = raw.decode("utf-8", errors="replace")
+        note = ""
+        if len(text) > READ_CAP:
+            text = text[:READ_CAP]
+            note = f"\n[truncated to {READ_CAP} chars]"
+        rel = target.relative_to(self.root).as_posix()
+        return f'<file_contents path="{rel}">\n{text}\n</file_contents>{note}'
+
     def workspace_line(self) -> str:
         return f"Workspace: {self.root} · shell: {self._shell or _default_shell_name()}"
 
@@ -78,6 +98,8 @@ class Workspace:
         return [
             FunctionTool(func=self.list_dir, name="list_dir",
                          description="List entries in a workspace directory."),
+            FunctionTool(func=self.read_file, name="read_file",
+                         description="Read a file from the workspace."),
             FunctionTool(
                 func=self.write_file, name="write_file",
                 description="Create or overwrite a file in the workspace (full contents).",

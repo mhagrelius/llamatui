@@ -54,3 +54,22 @@ def test_list_dir_lists_entries_and_confines(tmp_path):
     out = _ws(tmp_path).list_dir(".")
     assert "a.txt" in out and "sub/" in out
     assert "outside your workspace" in _ws(tmp_path).list_dir("..")
+
+
+def test_read_file_wraps_as_untrusted_with_path(tmp_path):
+    (tmp_path / "r.txt").write_text("secret-sauce", encoding="utf-8")
+    out = _ws(tmp_path).read_file("r.txt")
+    assert "secret-sauce" in out
+    assert '<file_contents path="r.txt">' in out and "</file_contents>" in out
+
+
+def test_read_file_caps_large_and_flags_binary(tmp_path):
+    from llamatui.filesystem import READ_CAP
+    (tmp_path / "big.txt").write_text("a" * (READ_CAP + 50), encoding="utf-8")
+    assert "truncated" in _ws(tmp_path).read_file("big.txt")
+    (tmp_path / "b.bin").write_bytes(b"\x00\x01\x02binary")
+    assert "binary" in _ws(tmp_path).read_file("b.bin").lower()
+
+
+def test_read_file_outside_refused(tmp_path):
+    assert "outside your workspace" in _ws(tmp_path).read_file("../x")
