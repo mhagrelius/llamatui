@@ -84,6 +84,7 @@ class AssistantTurn(Vertical):
         self._reasoning = ""
         self._answer = ""
         self._show_thinking = show_thinking
+        self._cmd_output_buf: str = ""
 
     def compose(self) -> ComposeResult:
         with Collapsible(title="Thinking…", collapsed=False, id="think"):
@@ -171,10 +172,8 @@ class AssistantTurn(Vertical):
             tail = Static("", classes="cmd-output-tail")
             tools.mount(tail)
 
-        current = tail.renderable
-        current_text: str = current.plain if isinstance(current, Text) else str(current)
-        combined = current_text + text
-        lines = combined.splitlines(keepends=True)
+        self._cmd_output_buf += text
+        lines = self._cmd_output_buf.splitlines(keepends=True)
         if len(lines) > _CMD_OUTPUT_TAIL_CAP:
             lines = lines[-_CMD_OUTPUT_TAIL_CAP:]
         tail.update(Text("".join(lines), no_wrap=True))

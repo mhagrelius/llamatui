@@ -36,6 +36,8 @@ class SpyWidget:
         self.calls.append(("set_think_title", title))
     def set_metrics(self, line, classes=""):
         self.calls.append(("set_metrics", line, classes))
+    def append_command_output(self, text):
+        self.calls.append(("append_command_output", text))
 
 
 class FakeClock:
