@@ -97,3 +97,27 @@ def test_workspace_line_is_in_instructions(tmp_path):
     b = AgentBuilder("http://x/v1", "m")
     b.rebuild(persona="P", volatile="D", settings=DEFAULTS, workspace=Workspace(tmp_path, shell="PowerShell"))
     assert str(tmp_path.resolve()) in b.instructions
+
+
+# ---- fetch capability branch ---------------------------
+class FakeFetcher:
+    def __init__(self, tools=None):
+        self._tools = tools if tools is not None else [object()]
+    def build_tools(self):
+        return list(self._tools)
+
+
+def test_fetch_feature_adds_note_and_tool():
+    from llamatui.webfetch import FETCH_GUIDANCE
+    t = object()
+    b = AgentBuilder("http://x", "m", fetcher=FakeFetcher(tools=[t]))
+    b.rebuild(persona="P", volatile="d", settings=DEFAULTS)
+    assert FETCH_GUIDANCE in b.instructions
+    assert t in b.tools
+
+
+def test_no_fetcher_adds_neither():
+    b = AgentBuilder("http://x", "m")
+    b.rebuild(persona="P", volatile="d", settings=DEFAULTS)
+    from llamatui.webfetch import FETCH_GUIDANCE
+    assert FETCH_GUIDANCE not in b.instructions
