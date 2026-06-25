@@ -110,7 +110,8 @@ class Workspace:
         for dirpath, dirnames, filenames in os.walk(base):
             dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)  # prune, don't descend
             for name in sorted(filenames):
-                if scanned >= MAX_FILES_SCANNED:
+                scanned += 1
+                if scanned > MAX_FILES_SCANNED:
                     hits.append(f"[search stopped after {MAX_FILES_SCANNED} files]")
                     return "\n".join(hits)
                 fp = Path(dirpath) / name
@@ -120,7 +121,6 @@ class Workspace:
                     raw = fp.read_bytes()
                 except OSError:
                     continue
-                scanned += 1
                 if b"\x00" in raw[:4096]:
                     continue
                 rel = fp.relative_to(self.root).as_posix()

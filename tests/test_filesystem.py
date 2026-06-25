@@ -94,3 +94,13 @@ def test_search_prunes_noise_dirs(tmp_path):
 
 def test_search_outside_refused(tmp_path):
     assert "outside your workspace" in _ws(tmp_path).search("x", "..")
+
+
+def test_search_stops_at_max_matches(tmp_path):
+    from llamatui.filesystem import MAX_MATCHES
+    (tmp_path / "matches.txt").write_text("\n".join([f"needle"] * (MAX_MATCHES + 5)), encoding="utf-8")
+    out = _ws(tmp_path).search("needle")
+    assert f"[stopped at {MAX_MATCHES} matches]" in out
+    # Count actual match lines (excluding the marker line)
+    match_lines = [line for line in out.split("\n") if "matches.txt" in line]
+    assert len(match_lines) == MAX_MATCHES
