@@ -18,11 +18,11 @@ EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 # search moves to an agent-framework skill. Policy only — what the tool *does* is in its own
 # description above, which the model also sees.
 WEB_SEARCH_GUIDANCE = (
-    "Web search (Exa): reach for it when the answer depends on current or fast-changing facts "
-    "(news, prices, releases and versions, dates, people, ongoing events), when asked to look "
-    "something up or handed a URL, or when you are not sure a fact is still true. Prefer searching "
-    "over guessing on anything time-sensitive. Use focused queries, corroborate what matters, and "
-    "cite the URLs. Do not search for stable knowledge or your own reasoning."
+    "Web search (Exa): reach for it to find sources when the answer depends on current or "
+    "fast-changing facts (news, prices, releases and versions, dates, people, ongoing events), "
+    "or when you are not sure a fact is still true. Use focused queries, corroborate what "
+    "matters, and cite the URLs. To read a specific result in full, fetch it with fetch_url. "
+    "Do not search for stable knowledge or your own reasoning."
 )
 
 
@@ -40,9 +40,10 @@ def build_exa_tool(url: str = EXA_MCP_URL) -> MCPStreamableHTTPTool:
         name="exa",
         url=url,
         headers=headers or None,
-        description="Web search and page retrieval via Exa. Use for current/online information.",
+        description="Web search via Exa. Use for finding current/online sources to read.",
         approval_mode="never_require",
         request_timeout=45,
+        allowed_tools=["web_search_exa"],
     )
 
 
