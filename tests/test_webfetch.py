@@ -3,7 +3,7 @@ fake extractor let us assert behavior with no network and no trafilatura."""
 
 from __future__ import annotations
 
-from llamatui.webfetch import _safe_url
+from llamatui.webfetch import _safe_url, HttpResponse, WebFetcher
 
 
 def test_safe_url_allows_http_and_https():
@@ -27,3 +27,46 @@ def test_safe_url_rejects_non_http_schemes():
 def test_safe_url_rejects_missing_host():
     assert _safe_url("http://") is not None
     assert _safe_url("notaurl") is not None
+
+
+class FakeClient:
+    """Serves canned HttpResponses in order; records requested URLs."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.requests: list[str] = []
+        self.closed = False
+
+    async def fetch_once(self, url, *, headers, max_bytes):
+        self.requests.append(url)
+        resp = self._responses.pop(0)
+        # Carry the requested URL through unless the canned response pins its own.
+        return HttpResponse(resp.status_code, resp.headers, resp.url or url, resp.body, resp.truncated)
+
+    async def aclose(self):
+        self.closed = True
+
+
+def _html_resp(html: str, url: str = "", status: int = 200, ctype: str = "text/html"):
+    return HttpResponse(status, {"content-type": ctype}, url, html.encode("utf-8"))
+
+
+def fake_extractor(markdown):
+    return lambda html, url: markdown
+
+
+async def test_fetch_returns_markdown_envelope():
+    html = "<html><head><title>Hello</title></head><body><p>Hi</p></body></html>"
+    fetcher = WebFetcher(client=FakeClient([_html_resp(html, url="https://ex.com/a")]),
+                         extractor=fake_extractor("# Hi\n\nbody text"))
+    out = await fetcher.fetch("https://ex.com/a")
+    assert '<fetched_url url="https://ex.com/a" title="Hello">' in out
+    assert "# Hi" in out
+    assert out.rstrip().endswith("</fetched_url>")
+
+
+async def test_fetch_rejects_unsafe_url_without_calling_client():
+    client = FakeClient([])
+    out = await WebFetcher(client=client, extractor=fake_extractor("x")).fetch("file:///etc/passwd")
+    assert "http" in out.lower()
+    assert client.requests == []   # never left the machine
