@@ -84,7 +84,8 @@ class AssistantTurn(Vertical):
         self._reasoning = ""
         self._answer = ""
         self._show_thinking = show_thinking
-        self._cmd_output_buf: str = ""
+        self._cmd_output_lines: list[str] = []  # accumulated lines; trimmed when over cap
+        self._cmd_tail: Static | None = None     # cached reference to the tail Static widget
 
     def compose(self) -> ComposeResult:
         with Collapsible(title="Thinking…", collapsed=False, id="think"):
@@ -162,22 +163,24 @@ class AssistantTurn(Vertical):
         Called directly on the event loop (the runner streams from within the awaited
         run_command, so no call_from_thread is needed). Creates the tail Static on first
         call and caps the visible content to _CMD_OUTPUT_TAIL_CAP lines.
+        Caches the tail Static to avoid repeated DOM queries on every chunk (Fix 7).
         """
-        tools = self.query_one("#tools", Vertical)
-        # Locate or create the tail region (a single Static tagged "cmd-output-tail").
-        tail_widgets = tools.query(".cmd-output-tail")
-        if tail_widgets:
-            tail = tail_widgets.last(Static)
-        else:
-            tail = Static("", classes="cmd-output-tail")
-            tools.mount(tail)
+        # Create or reuse the cached tail Static; mount only once.
+        if self._cmd_tail is None:
+            self._cmd_tail = Static("", classes="cmd-output-tail")
+            self.query_one("#tools", Vertical).mount(self._cmd_tail)
 
-        self._cmd_output_buf += text
-        lines = self._cmd_output_buf.splitlines(keepends=True)
-        if len(lines) > _CMD_OUTPUT_TAIL_CAP:
-            lines = lines[-_CMD_OUTPUT_TAIL_CAP:]
-        self._cmd_output_buf = "".join(lines)
-        tail.update(Text(self._cmd_output_buf, no_wrap=True))
+        # Split incoming text into lines and extend the accumulated list.
+        new_lines = text.splitlines(keepends=True)
+        # Handle a partial last line: if the previous last entry had no newline, merge with first new
+        if self._cmd_output_lines and not self._cmd_output_lines[-1].endswith(("\n", "\r")):
+            self._cmd_output_lines[-1] += new_lines[0] if new_lines else ""
+            new_lines = new_lines[1:]
+        self._cmd_output_lines.extend(new_lines)
+        # Trim to cap only when over the limit (avoids a full slice every chunk).
+        if len(self._cmd_output_lines) > _CMD_OUTPUT_TAIL_CAP:
+            self._cmd_output_lines = self._cmd_output_lines[-_CMD_OUTPUT_TAIL_CAP:]
+        self._cmd_tail.update(Text("".join(self._cmd_output_lines), no_wrap=True))
 
 
 def render_status(*, model: str, state: str, detail: str, connected: bool, voice: str) -> Text:
