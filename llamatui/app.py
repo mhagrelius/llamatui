@@ -40,8 +40,9 @@ from .settings import (
 )
 from .settings_screen import SettingsScreen
 from .storage import Store, connect
+from .filesystem import ALWAYS_PROMPT_TOOLS
 from .tools import build_exa_tool, exa_key_present
-from .turn import TurnStream, strip_tool_noise
+from .turn import AWAITING, TurnStream, strip_tool_noise
 from .turn_view import TurnView, metrics_blob
 from .voice import VoiceInput, keyboard_initial_delay_s
 from .whisper import WhisperServer
@@ -411,6 +412,10 @@ class LlamaTUI(App):
                 requests = list(final.user_input_requests)
                 if not requests:
                     break
+                # Route the "awaiting approval" phase through TurnState so it flows through
+                # the normal status path (spec §H).
+                stream.state.phase = AWAITING
+                view.reflect(stream.state, force=True)
                 responses = await self._resolve_approvals(requests, view)
                 # Resume on the SAME session (it holds the assistant function_call) + SAME agent
                 # (KV prefix intact). Submit ONLY the approval responses.
@@ -452,19 +457,20 @@ class LlamaTUI(App):
         """Show the modal (unless already 'approve all'), return approval-response contents.
         Times the human pause so generate() can exclude it from elapsed (Task 3.5)."""
         import time
-        run_cmd = [r for r in requests if getattr(r.function_call, "name", "") == "run_command"]
-        typed = [r for r in requests if r not in run_cmd]
+        # ALWAYS_PROMPT_TOOLS (e.g. run_command) must never be blanket-approved — always re-prompt.
+        always_prompt = [r for r in requests if getattr(r.function_call, "name", "") in ALWAYS_PROMPT_TOOLS]
+        typed = [r for r in requests if r not in always_prompt]
         decided: dict = {}
-        to_prompt = list(run_cmd)               # run_command is NEVER blanket-approved
+        to_prompt = list(always_prompt)         # ALWAYS_PROMPT_TOOLS are NEVER blanket-approved
         if self._approve_all:
             decided.update({r.id: True for r in typed})
         else:
             to_prompt += typed
         if to_prompt:
-            self._status("awaiting approval")
+            has_typed = bool(typed)
             t0 = time.monotonic()
             result = await self.push_screen_wait(
-                ApprovalModal(to_prompt, workspace=self.workspace)
+                ApprovalModal(to_prompt, workspace=self.workspace, allow_approve_all=has_typed)
             )
             self._pause_s += time.monotonic() - t0
             result = result or {r.id: False for r in to_prompt}
@@ -588,8 +594,8 @@ class LlamaTUI(App):
                 turn.set_thinking_visible(result.show_thinking)
         if "voice_mode" in changed and self.voice is not None:
             self.voice.set_mode(result.voice_mode)    # discards any in-flight recording, re-arms
-        if "default_workspace" in changed:
-            self._rebuild_workspace()
+        if "default_workspace" in changed and not self._busy:
+            self._rebuild_agent()  # rebuilds workspace + rebinds tools; skipped mid-turn per spec §H
         try:
             save_changes(paths.settings_path(), changed)
         except OSError as exc:

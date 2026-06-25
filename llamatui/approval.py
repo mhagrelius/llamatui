@@ -16,14 +16,19 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
 
+def _parse_args(call) -> dict:
+    """Parse a function_call's arguments to a dict; returns {} or {'args': raw} on failure."""
+    args = getattr(call, "arguments", "") or ""
+    try:
+        return json.loads(args) if isinstance(args, str) else dict(args)
+    except Exception:
+        return {"args": args}
+
+
 def _describe(call) -> str:
     """One-line human description of a pending function_call content."""
     name = getattr(call, "name", "?")
-    args = getattr(call, "arguments", "") or ""
-    try:
-        parsed = json.loads(args) if isinstance(args, str) else dict(args)
-    except Exception:
-        parsed = {"args": args}
+    parsed = _parse_args(call)
     if name == "run_command":
         return f"run_command: {parsed.get('command', '')}"
     if name == "write_file":
@@ -36,10 +41,11 @@ def _describe(call) -> str:
 class ApprovalModal(ModalScreen[dict]):
     BINDINGS = [Binding("escape", "deny", "Deny")]
 
-    def __init__(self, requests: list, *, workspace=None) -> None:
+    def __init__(self, requests: list, *, workspace=None, allow_approve_all: bool = False) -> None:
         super().__init__()
         self._requests = requests  # list of function_approval_request Content
         self._workspace = workspace  # used for write_file diff previews (Task 15); unused until then
+        self._allow_approve_all = allow_approve_all  # gate: only show when typed (non-run_command) reqs present
 
     def _render_call(self, call) -> str:
         """Return the display text for a single pending function_call.
@@ -50,21 +56,12 @@ class ApprovalModal(ModalScreen[dict]):
         informed decision (run_command is uncontained-by-design; cwd matters).
         """
         name = getattr(call, "name", "?")
+        parsed = _parse_args(call)
         if name == "write_file" and self._workspace is not None:
-            args = getattr(call, "arguments", "") or ""
-            try:
-                parsed = json.loads(args) if isinstance(args, str) else dict(args)
-            except Exception:
-                parsed = {}
             path = parsed.get("path", "")
             content = parsed.get("content", "")
             return self._workspace.preview_write(path, content)
         if name == "run_command":
-            args = getattr(call, "arguments", "") or ""
-            try:
-                parsed = json.loads(args) if isinstance(args, str) else dict(args)
-            except Exception:
-                parsed = {}
             command = parsed.get("command", "")
             if self._workspace is not None:
                 ws_line = self._workspace.workspace_line()
@@ -79,7 +76,8 @@ class ApprovalModal(ModalScreen[dict]):
                 for req in self._requests:
                     yield Static(self._render_call(req.function_call), classes="approval-call")
             yield Button("Approve", id="approve", variant="success")
-            yield Button("Approve all this turn", id="approve-all", variant="warning")
+            if self._allow_approve_all:
+                yield Button("Approve all this turn", id="approve-all", variant="warning")
             yield Button("Deny", id="deny", variant="error")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

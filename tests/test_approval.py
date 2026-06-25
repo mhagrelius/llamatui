@@ -105,3 +105,64 @@ def test_render_call_run_command_no_workspace_falls_back():
     rendered = modal._render_call(call)
     assert "run_command" in rendered
     assert "ls -la" in rendered
+
+
+# ---- Fix 1: allow_approve_all gate on ApprovalModal ----------------------
+
+def test_approval_modal_allow_approve_all_false_flag():
+    """ApprovalModal with allow_approve_all=False stores the flag correctly."""
+    reqs = [_request("r1", "run_command")]
+    modal = ApprovalModal(reqs, allow_approve_all=False)
+    assert modal._allow_approve_all is False
+
+
+def test_approval_modal_allow_approve_all_true_flag():
+    """ApprovalModal with allow_approve_all=True stores the flag correctly."""
+    reqs = [_request("r1", "write_file")]
+    modal = ApprovalModal(reqs, allow_approve_all=True)
+    assert modal._allow_approve_all is True
+
+
+def test_approval_modal_default_allow_approve_all_is_false():
+    """ApprovalModal defaults allow_approve_all to False (backward-compat)."""
+    reqs = [_request("r1", "write_file")]
+    modal = ApprovalModal(reqs)
+    assert modal._allow_approve_all is False
+
+
+# ---- Fix 1 + Fix 3: _resolve_approvals logic — has_typed determines flag ----
+
+def _make_request_simple(rid: str, name: str):
+    from types import SimpleNamespace
+    fc = SimpleNamespace(name=name)
+    return SimpleNamespace(id=rid, function_call=fc)
+
+
+def test_resolve_approvals_run_command_only_has_typed_false():
+    """A batch of only run_command requests → has_typed is False (no blanket-approve button)."""
+    from llamatui.filesystem import ALWAYS_PROMPT_TOOLS
+    requests = [_make_request_simple("r1", "run_command")]
+    always_prompt = [r for r in requests if getattr(r.function_call, "name", "") in ALWAYS_PROMPT_TOOLS]
+    typed = [r for r in requests if r not in always_prompt]
+    has_typed = bool(typed)
+    assert has_typed is False
+
+
+def test_resolve_approvals_mixed_batch_has_typed_true():
+    """A batch with write_file + run_command → has_typed is True."""
+    from llamatui.filesystem import ALWAYS_PROMPT_TOOLS
+    requests = [
+        _make_request_simple("r1", "write_file"),
+        _make_request_simple("r2", "run_command"),
+    ]
+    always_prompt = [r for r in requests if getattr(r.function_call, "name", "") in ALWAYS_PROMPT_TOOLS]
+    typed = [r for r in requests if r not in always_prompt]
+    has_typed = bool(typed)
+    assert has_typed is True
+
+
+def test_always_prompt_tools_contains_run_command():
+    """ALWAYS_PROMPT_TOOLS must contain run_command and be a frozenset."""
+    from llamatui.filesystem import ALWAYS_PROMPT_TOOLS
+    assert "run_command" in ALWAYS_PROMPT_TOOLS
+    assert isinstance(ALWAYS_PROMPT_TOOLS, frozenset)

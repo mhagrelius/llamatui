@@ -24,6 +24,9 @@ from agent_framework import FunctionTool
 CMD_OUTPUT_CAP = 10_000
 BACKSTOP_TIMEOUT_S = 900
 
+# Tools that must always re-prompt regardless of "approve all" — never blanket-approved.
+ALWAYS_PROMPT_TOOLS = frozenset({"run_command"})
+
 
 @dataclass
 class CommandResult:
@@ -98,8 +101,10 @@ async def _default_runner(command, *, cwd, on_output=None, output_cap=CMD_OUTPUT
                                      return_when=asyncio.FIRST_COMPLETED)
         if not done:
             status = "timeout"; _kill_tree()
-        elif cancel_event is not None and cancel_event.is_set():
-            status = "cancelled"; _kill_tree()
+        elif proc.returncode is not None:
+            status = "ok"                       # process finished — honor it even if cancel raced
+        else:
+            status = "cancelled"; _kill_tree()  # still running → user cancel/timeout
         try:
             await asyncio.wait_for(pump_task, timeout=2)   # drain remaining output
         except (asyncio.TimeoutError, asyncio.CancelledError):
@@ -273,7 +278,10 @@ class Workspace:
             fromfile=f"a/{rel}",
             tofile=f"b/{rel}",
         )
-        return f"overwrite {rel}\n\n" + "\n".join(diff)
+        diff_text = "\n".join(diff)
+        if len(diff_text) > PREVIEW_CAP:
+            diff_text = diff_text[:PREVIEW_CAP] + "\n[… diff truncated]"
+        return f"overwrite {rel}\n\n{diff_text}"
 
     def workspace_line(self) -> str:
         return f"Workspace: {self.root} · shell: {self._shell or _default_shell_name()}"
