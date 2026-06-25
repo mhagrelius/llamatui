@@ -2,7 +2,7 @@
 auto-repeat (many events ~30-50 ms apart); the whole burst must collapse to one toggle.
 The decision is a pure, clock-injected helper so it's testable without a running App."""
 
-from llamatui.app import _Debouncer
+from llamatui.voice import _Debouncer
 
 
 def test_first_event_fires():

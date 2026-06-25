@@ -2,7 +2,7 @@
 Ctrl+R auto-repeat burst to start/stop by inferring 'release' from a gap in the burst. Two-phase
 gap — D+margin before the first repeat, a short gap after. See ADR-0002."""
 
-from llamatui.app import (
+from llamatui.voice import (
     HOLD_INITIAL_MARGIN_S, HOLD_RELEASE_GAP_ACTIVE_S, _HoldController, keyboard_initial_delay_s,
 )
 

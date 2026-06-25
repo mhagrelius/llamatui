@@ -74,15 +74,27 @@ use these names in code, comments, and reviews rather than inventing new ones.
   distinct, always-last slot; stable parts (persona → capability guidance → ambient memory
   block) precede it by construction. Tested as a property in `tests/test_instructions.py`.
 
-- **Dictation** — the *record → transcribe* state machine (`dictation.py`). `Ctrl+R` starts
-  recording, again to stop and transcribe; the text lands in the prompt input for review and is
-  **never auto-sent**. States: `idle → recording → transcribing → idle`, with **at most one
-  recording and one transcription live at a time** — re-entrant `Ctrl+R` during `transcribing` is a
-  no-op. The mic recorder and the transcriber are *injectable seams* (mirroring the `Embedder`
-  protocol), so tests use a fake recorder + fake transcriber — no real audio or network. Dictation
-  is **independent of the `gen` worker group**: you can dictate the next prompt while a reply still
-  streams, so it owns its own **voice** segment in the `StatusBar` rather than fighting `gen` for
-  the shared state line.
+- **Dictation** — the *record → transcribe* state machine (`dictation.py`). Its interface is four
+  verbs — `start` / `stop` / `cancel` / `toggle` — driven by [[VoiceInput]]; the transcribed text
+  lands in the prompt input for review and is **never auto-sent**. States:
+  `idle → recording → transcribing → idle`, with **at most one recording and one transcription live
+  at a time** — a re-entrant verb during `transcribing` is a no-op. The mic recorder and the
+  transcriber are *injectable seams* (mirroring the `Embedder` protocol), so tests use a fake
+  recorder + fake transcriber — no real audio or network. Dictation is **independent of the `gen`
+  worker group**: you can dictate the next prompt while a reply still streams, so it owns its own
+  **voice** segment in the `StatusBar` rather than fighting `gen` for the shared state line.
+
+- **VoiceInput** — the deep module (`voice.py`) that maps a `Ctrl+R` key stream to [[Dictation]]
+  verbs according to the [[voice mode]]. It owns everything *between the key and the verb*: the
+  **toggle** debounce (a held key's auto-repeat collapses to one toggle), the **hold** two-phase
+  release-gap detection (see ADR-0002), the shared **120 s cap**, and the re-arm when the mode
+  changes mid-recording. The interface is two verbs — `key()` (the dictate key fired) and
+  `set_mode()` (switch mode; discards any in-flight recording and re-arms) — behind which the App
+  owns **no dictation-timer lifecycle**. Framework-free and clock-injected like [[Dictation]]: the
+  wall-clock and a `schedule_interval` *poll seam* (the timer analog of Dictation's `run_bg`) are
+  injected, so the whole key→verb mapping is the test surface (`tests/test_voice.py`); the App just
+  supplies a one-line Textual `set_interval` adapter. The 120 s cap here is the *proactive*
+  auto-stop; `dictation.MAX_SAMPLES` is the independent defensive truncation floor.
 
 - **WhisperServer** — owns *a reachable local-STT endpoint* (`whisper.py`): a whisper.cpp
   `whisper-server`. This is the whisper **wire-adapter** seam — the single place that knows the
@@ -116,18 +128,20 @@ use these names in code, comments, and reviews rather than inventing new ones.
   source of the defaults). Loading never writes the file, so a one-off CLI flag wins for that
   run without persisting; only the Settings panel writes.
 
-- **voice mode** — how a `Ctrl+R` key stream is mapped to dictation verbs (a **Settings**
-  field). **Toggle** (default): press starts, press again stops. **Hold**: hold to record,
+- **voice mode** — the *policy* for which mapping [[VoiceInput]] applies from the `Ctrl+R` key
+  stream to dictation verbs (a **Settings** field; [[VoiceInput]] is the module that applies it).
+  **Toggle** (default): press starts, press again stops. **Hold**: hold to record,
   release to stop — but terminals (and Textual) expose no key-release, so "release" is
-  inferred from a gap in the key's OS **auto-repeat** burst. See [[Dictation]].
+  inferred from a gap in the key's OS **auto-repeat** burst. See [[VoiceInput]] for the mapping and
+  ADR-0002 for the hold mechanism.
 
 ## Architecture stance
 
 The Textual `App` (`app.py`) is a **thin adapter**: it wires widgets, keybindings, and the
 streaming worker, but delegates the genuinely complex jobs to deep modules — `TurnStream`
 (interpret the stream), `Conversation` (own history + persistence), `KnowledgeGraph` (facts +
-retrieval), and `Memory` (the model-facing surface). The interface of each deep module is its
-test surface; see `tests/`.
+retrieval), `Memory` (the model-facing surface), and `VoiceInput` (map the `Ctrl+R` key stream to
+dictation verbs). The interface of each deep module is its test surface; see `tests/`.
 
 **Cache-prefix discipline.** `_rebuild_agent` builds the system prompt via
 `build_instructions(persona, capabilities, ambient, volatile=date)`, which guarantees the

@@ -14,7 +14,6 @@ reflects its state into widgets.
 from __future__ import annotations
 
 import asyncio
-import ctypes
 import json
 import time
 from datetime import datetime
@@ -36,13 +35,14 @@ from .instructions import build_instructions
 from .memory import Memory
 from .paths import default_whisper_dir
 from .settings import (
-    DEFAULTS, SAMPLING_FIELDS, Settings, VoiceMode, changed_fields, load as load_settings,
+    DEFAULTS, SAMPLING_FIELDS, Settings, changed_fields, load as load_settings,
     save_changes,
 )
 from .settings_screen import SettingsScreen
 from .storage import Store, connect
 from .tools import build_exa_tool, exa_key_present
 from .turn import WRITING, TurnStream, strip_tool_noise
+from .voice import VoiceInput, keyboard_initial_delay_s
 from .whisper import WhisperServer
 from .widgets import AssistantTurn, PromptArea, StatusBar, UserTurn
 
@@ -135,92 +135,6 @@ def resolve_whisper_dir(cwd_whisper: Path | None = None) -> Path:
 
 RENDER_INTERVAL = 0.06
 
-# Holding Ctrl+R makes the terminal auto-repeat the key (~30-50 ms apart), which would
-# otherwise toggle dictation on/off rapidly (flicker). A leading-edge debounce fires on the
-# first press and swallows the rest of the burst; every event refreshes the timer, so a
-# continuous hold never re-fires until there's a quiet gap longer than the window.
-DICTATE_DEBOUNCE_S = 0.5
-
-
-class _Debouncer:
-    def __init__(self, window_s: float) -> None:
-        self._window = window_s
-        self._last: float | None = None
-
-    def should_fire(self, now: float) -> bool:
-        fire = self._last is None or (now - self._last) >= self._window
-        self._last = now
-        return fire
-
-
-_DEFAULT_KEY_DELAY_S = 0.5
-
-# Hold-to-talk gaps. Before the first auto-repeat we must wait the OS initial-repeat delay D
-# plus a margin (a held key is silent until repeat begins at ~D). Once a repeat confirms the
-# burst is live, a short gap means release — crisp and independent of D. See ADR-0002.
-HOLD_INITIAL_MARGIN_S = 0.30
-HOLD_RELEASE_GAP_ACTIVE_S = 0.20
-
-
-def keyboard_initial_delay_s() -> float:
-    """OS initial key-repeat delay in seconds, or a safe default if unavailable.
-    Windows SPI_GETKEYBOARDDELAY returns 0-3 → 250/500/750/1000 ms."""
-    SPI_GETKEYBOARDDELAY = 0x0016
-    try:
-        value = ctypes.c_int()
-        ok = ctypes.windll.user32.SystemParametersInfoW(
-            SPI_GETKEYBOARDDELAY, 0, ctypes.byref(value), 0
-        )
-        if ok and 0 <= value.value <= 3:
-            return 0.25 * (value.value + 1)
-    except Exception:  # pragma: no cover - non-Windows / restricted env falls back
-        pass
-    return _DEFAULT_KEY_DELAY_S
-
-
-class _HoldController:
-    """Maps a Ctrl+R auto-repeat burst to record start/stop, inferring 'release' from a gap in
-    the burst (terminals expose no key-release; see ADR-0002). Pure and clock-injected: the App
-    feeds it key events and timer ticks and acts on the returned signals."""
-
-    def __init__(self, initial_delay_s: float) -> None:
-        self._before_gap = initial_delay_s + HOLD_INITIAL_MARGIN_S
-        self._active_gap = HOLD_RELEASE_GAP_ACTIVE_S
-        self._recording = False
-        self._repeating = False
-        self._last_key = 0.0
-
-    def reset(self) -> None:
-        """Re-arm: clear recording/repeating so the next on_key starts a fresh recording."""
-        self._recording = False
-        self._repeating = False
-
-    @property
-    def recording(self) -> bool:
-        return self._recording
-
-    def on_key(self, now: float) -> bool:
-        """A Ctrl+R event. Returns True only on the first press (caller should start recording);
-        later events are auto-repeat and confirm the burst is live."""
-        self._last_key = now
-        if not self._recording:
-            self._recording = True
-            self._repeating = False
-            return True
-        self._repeating = True
-        return False
-
-    def expired(self, now: float) -> bool:
-        """Poll tick. Returns True once the release gap has elapsed (caller should stop)."""
-        if not self._recording:
-            return False
-        gap = self._active_gap if self._repeating else self._before_gap
-        if now - self._last_key > gap:
-            self._recording = False
-            self._repeating = False
-            return True
-        return False
-
 
 class Config:
     def __init__(
@@ -271,12 +185,8 @@ class LlamaTUI(App):
         self.memory: Memory | None = None
         self.whisper: WhisperServer | None = None
         self.dictation: Dictation | None = None
+        self.voice: VoiceInput | None = None
         self.voice_enabled = False
-        self._cap_timer = None
-        self._dictate_debounce = _Debouncer(DICTATE_DEBOUNCE_S)
-        self._key_delay_s = keyboard_initial_delay_s()
-        self._hold = _HoldController(self._key_delay_s)
-        self._hold_timer = None
 
     # ---- setup -----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -337,6 +247,13 @@ class LlamaTUI(App):
                     on_state=self._voice_state,
                     on_note=self._voice_note,
                 )
+                self.voice = VoiceInput(
+                    self.dictation,
+                    self._schedule_interval,
+                    mode=self.settings.voice_mode,
+                    d=keyboard_initial_delay_s(),
+                    on_note=self._voice_note,
+                )
                 self.voice_enabled = True
 
         self._rebuild_agent()
@@ -359,9 +276,6 @@ class LlamaTUI(App):
         self._status("ready", connected=connected)
 
     async def on_unmount(self) -> None:
-        if self._cap_timer is not None:
-            self._cap_timer.stop()
-            self._cap_timer = None
         if self.whisper is not None:
             try:
                 self.whisper.close()
@@ -379,6 +293,11 @@ class LlamaTUI(App):
     def _dictation_bg(self, task, done) -> None:
         result = task()
         self.call_from_thread(done, result)
+
+    def _schedule_interval(self, interval: float, callback):
+        """The interval seam VoiceInput schedules its cap/hold poll through (see voice.py).
+        Returns the timer's zero-arg ``stop`` as the cancel handle."""
+        return self.set_interval(interval, callback).stop
 
     @work(thread=True, group="embedder")
     def _load_embedder(self) -> None:
@@ -660,52 +579,10 @@ class LlamaTUI(App):
         self.action_dictate()
 
     def action_dictate(self) -> None:
-        if self.dictation is None:
+        if self.voice is None:
             self._voice_note("voice off — run: llamatui --setup-voice")
             return
-        if self.settings.voice_mode is VoiceMode.HOLD:
-            self._dictate_hold()
-        else:
-            self._dictate_toggle()
-
-    def _dictate_toggle(self) -> None:
-        # Collapse held-key auto-repeat to a single toggle (see _Debouncer).
-        if not self._dictate_debounce.should_fire(time.monotonic()):
-            return
-        self.dictation.toggle()
-        if self.dictation.state is State.RECORDING:
-            self._cap_timer = self.set_timer(120.0, self._cap_stop)
-        elif self._cap_timer is not None:
-            self._cap_timer.stop()
-            self._cap_timer = None
-
-    def _dictate_hold(self) -> None:
-        if self._hold.on_key(time.monotonic()):       # first press → start recording
-            self.dictation.start()
-            self._cap_timer = self.set_timer(120.0, self._cap_stop)
-            self._hold_timer = self.set_interval(0.05, self._hold_tick)
-
-    def _hold_tick(self) -> None:
-        if self._hold.expired(time.monotonic()):
-            self._stop_hold_timer()
-            if self._cap_timer is not None:
-                self._cap_timer.stop()
-                self._cap_timer = None
-            if self.dictation is not None:
-                self.dictation.stop()
-
-    def _stop_hold_timer(self) -> None:
-        if self._hold_timer is not None:
-            self._hold_timer.stop()
-            self._hold_timer = None
-
-    def _cap_stop(self) -> None:
-        self._cap_timer = None
-        self._stop_hold_timer()
-        if self.dictation is not None and self.dictation.state is State.RECORDING:
-            self._voice_note("recording stopped (max length)")
-            self.dictation.stop()
-        self._hold.reset()
+        self.voice.key()
 
     def _insert_transcript(self, text: str) -> None:
         prompt = self.query_one("#prompt", PromptArea)
@@ -739,10 +616,8 @@ class LlamaTUI(App):
         if "show_thinking" in changed:
             for turn in self.query(AssistantTurn):
                 turn.set_thinking_visible(result.show_thinking)
-        if "voice_mode" in changed and self.dictation is not None:
-            self.dictation.cancel()                   # discard any in-flight recording
-            self._stop_hold_timer()
-            self._hold.reset()
+        if "voice_mode" in changed and self.voice is not None:
+            self.voice.set_mode(result.voice_mode)    # discards any in-flight recording, re-arms
         try:
             save_changes(paths.settings_path(), changed)
         except OSError as exc:
