@@ -112,3 +112,13 @@ def test_move_renames_inside_and_confines(tmp_path):
     assert not (tmp_path / "a.txt").exists() and (tmp_path / "b.txt").read_text(encoding="utf-8") == "x"
     assert "b.txt" in msg.replace("\\", "/")
     assert "outside your workspace" in _ws(tmp_path).move("b.txt", "../escaped.txt")
+
+
+def test_delete_routes_to_trash_not_hard_delete(tmp_path):
+    trashed = []
+    ws = Workspace(tmp_path, trash=lambda p: trashed.append(p))
+    (tmp_path / "d.txt").write_text("x", encoding="utf-8")
+    msg = ws.delete("d.txt")
+    assert trashed == [str((tmp_path / "d.txt").resolve())]
+    assert "recycle" in msg.lower() or "trash" in msg.lower()
+    assert "outside your workspace" in ws.delete("../x")

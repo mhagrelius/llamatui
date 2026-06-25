@@ -48,6 +48,12 @@ def OUTSIDE_MSG(root: Path) -> str:
     )
 
 
+def _default_trash():
+    """Lazily import send2trash so module load doesn't hard-require it."""
+    from send2trash import send2trash
+    return send2trash
+
+
 class Workspace:
     def __init__(self, root, *, runner=None, trash=None, shell: str | None = None) -> None:
         self.root = Path(root).resolve()
@@ -154,6 +160,11 @@ class Workspace:
                 description="Move (rename) or relocate a file or directory within the workspace.",
                 approval_mode="always_require",
             ),
+            FunctionTool(
+                func=self.delete, name="delete",
+                description="Delete a file or directory, sending it to the recycle bin.",
+                approval_mode="always_require",
+            ),
         ]
 
     # ---- mutation tool --------------------------------------------------
@@ -184,3 +195,13 @@ class Workspace:
         d.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(s), str(d))
         return f"Moved {s.relative_to(self.root).as_posix()} → {d.relative_to(self.root).as_posix()}."
+
+    def delete(self, path: Annotated[str, "Workspace-relative path to delete (to recycle bin)."]) -> str:
+        target = self._confined(path)
+        if target is None:
+            return OUTSIDE_MSG(self.root)
+        if not target.exists():
+            return f"Not found: {path}"
+        trash = self._trash or _default_trash()
+        trash(str(target))
+        return f"Sent {target.relative_to(self.root).as_posix()} to the recycle bin."
