@@ -33,6 +33,7 @@ class Conversation:
         self.id: int | None = None
         self.title: str | None = None
         self.system_prompt: str | None = None
+        self.workspace: str | None = None
         self._messages: list = []  # user + assistant *answer* only — never reasoning
 
     # ---- lifecycle -------------------------------------------------------
@@ -41,6 +42,7 @@ class Conversation:
         self.id = None
         self.title = None
         self.system_prompt = system_prompt
+        self.workspace = None
         self._messages = []
 
     def load(self, conv_id: int) -> list | None:
@@ -55,6 +57,7 @@ class Conversation:
         self.id = conv_id
         self.title = conv["title"]
         self.system_prompt = conv["system_prompt"]
+        self.workspace = conv["workspace"]
         rows = self._store.get_messages(conv_id)
         self._messages = [make_message(r["role"], r["content"]) for r in rows]
         return rows
@@ -85,7 +88,7 @@ class Conversation:
         if self.id is None:
             self.title = _title_from(user_text)
             self.id = self._store.create_conversation(
-                self.title, self.system_prompt, self.model
+                self.title, self.system_prompt, self.model, workspace=self.workspace
             )
         self._store.add_message(self.id, "user", user_text)
         self._store.add_message(self.id, "assistant", answer, reasoning or None, metrics)

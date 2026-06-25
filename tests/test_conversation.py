@@ -85,3 +85,11 @@ def test_load_unknown_id_returns_none(tmp_path):
     conv = Conversation(store)
     assert conv.load(999) is None
     assert conv.id is None
+
+
+def test_workspace_column_roundtrips(tmp_path):
+    s = Store(connect(tmp_path / "c.db"))
+    cid = s.create_conversation("t", None, "m", workspace=str(tmp_path))
+    assert s.get_conversation(cid)["workspace"] == str(tmp_path)
+    s.set_workspace(cid, str(tmp_path / "sub"))
+    assert s.get_conversation(cid)["workspace"] == str(tmp_path / "sub")

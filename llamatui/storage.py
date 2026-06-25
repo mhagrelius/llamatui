@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     title         TEXT    NOT NULL DEFAULT 'New conversation',
     system_prompt TEXT,
     model         TEXT,
+    workspace     TEXT,
     created_at    TEXT    NOT NULL,
     updated_at    TEXT    NOT NULL
 );
@@ -68,18 +69,21 @@ class Store:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.db = conn
         self.db.executescript(SCHEMA)
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(conversations)")}
+        if "workspace" not in cols:
+            self.db.execute("ALTER TABLE conversations ADD COLUMN workspace TEXT")
         self.db.commit()
 
     def close(self) -> None:
         self.db.close()
 
     # ---- conversations ---------------------------------------------------
-    def create_conversation(self, title: str, system_prompt: str | None, model: str | None) -> int:
+    def create_conversation(self, title: str, system_prompt: str | None, model: str | None, workspace: str | None = None) -> int:
         ts = _now()
         cur = self.db.execute(
-            "INSERT INTO conversations (title, system_prompt, model, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (title[:120], system_prompt, model, ts, ts),
+            "INSERT INTO conversations (title, system_prompt, model, workspace, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (title[:120], system_prompt, model, workspace, ts, ts),
         )
         self.db.commit()
         return int(cur.lastrowid)
@@ -96,6 +100,10 @@ class Store:
 
     def rename_conversation(self, conv_id: int, title: str) -> None:
         self.db.execute("UPDATE conversations SET title = ? WHERE id = ?", (title[:120], conv_id))
+        self.db.commit()
+
+    def set_workspace(self, conv_id: int, path: str | None) -> None:
+        self.db.execute("UPDATE conversations SET workspace = ? WHERE id = ?", (path, conv_id))
         self.db.commit()
 
     def touch(self, conv_id: int) -> None:
