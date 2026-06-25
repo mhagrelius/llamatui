@@ -25,6 +25,7 @@ THINKING = "thinking"
 SEARCHING = "searching"
 WRITING = "writing"
 RUNNING = "running"
+AWAITING = "awaiting approval"  # spec §H: turn is paused waiting for the user to approve a call
 
 _QUERY_RE = re.compile(r'"query"\s*:\s*"([^"]*)"')
 

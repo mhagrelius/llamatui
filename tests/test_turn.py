@@ -163,3 +163,21 @@ def test_run_command_call_sets_running_phase():
     s.ingest(SimpleNamespace(contents=[SimpleNamespace(
         type="function_call", name="run_command", call_id="c1", arguments='{"command":"ls"}')]))
     assert s.state.phase == RUNNING
+
+
+# ---- Fix 5: AWAITING phase constant (spec §H) --------------------------------
+
+def test_awaiting_phase_constant_exists_and_is_distinct():
+    """AWAITING must exist as a module-level constant and be different from all other phases."""
+    from llamatui.turn import AWAITING, THINKING, SEARCHING, WRITING, RUNNING
+    assert isinstance(AWAITING, str)
+    assert AWAITING not in {THINKING, SEARCHING, WRITING, RUNNING}
+    assert AWAITING == "awaiting approval"
+
+
+def test_turn_state_phase_can_be_set_to_awaiting():
+    """TurnState.phase can hold AWAITING (it's just a string field; no enum restriction)."""
+    from llamatui.turn import AWAITING, TurnState
+    st = TurnState()
+    st.phase = AWAITING
+    assert st.phase == AWAITING
