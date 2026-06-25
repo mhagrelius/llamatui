@@ -9,13 +9,109 @@ tool surface (build_tools/FILESYSTEM_GUIDANCE) only phrases it for the model.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
 from agent_framework import FunctionTool
+
+
+CMD_OUTPUT_CAP = 10_000
+BACKSTOP_TIMEOUT_S = 900
+
+
+@dataclass
+class CommandResult:
+    output: str
+    exit_code: int | None
+    status: str  # "ok" | "cancelled" | "timeout"
+
+
+def _cap_output(text: str, cap: int) -> str:
+    if len(text) <= cap:
+        return text
+    head = text[:cap]
+    dropped = text[cap:].count("\n") + 1
+    return head + f"\n[output truncated, {dropped} more lines]"
+
+
+def _shell_argv(command: str) -> list[str]:
+    if sys.platform == "win32":
+        return ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+    return ["/bin/sh", "-c", command]
+
+
+async def _default_runner(command, *, cwd, on_output=None, output_cap=CMD_OUTPUT_CAP,
+                          timeout=BACKSTOP_TIMEOUT_S, cancel_event=None) -> CommandResult:
+    creationflags = 0
+    start_new_session = False
+    if sys.platform == "win32":
+        import subprocess
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP  # group so we can kill the tree
+    else:
+        start_new_session = True
+    proc = await asyncio.create_subprocess_exec(
+        *_shell_argv(command), cwd=cwd,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        creationflags=creationflags, start_new_session=start_new_session,
+    )
+    buf: list[str] = []
+
+    async def _pump():
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            chunk = raw.decode("utf-8", errors="replace")
+            buf.append(chunk)
+            if on_output is not None:
+                on_output(chunk)
+
+    def _kill_tree():
+        try:
+            if sys.platform == "win32":
+                import subprocess
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                               capture_output=True)
+            else:
+                import signal
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    # Race process completion against (a) the backstop timeout and (b) the cancel_event the
+    # App sets from the UI. Cancel via the EVENT — not task cancellation — so the worker (and
+    # thus the turn) survives and the agentic loop continues with a "cancelled" result.
+    pump_task = asyncio.ensure_future(_pump())
+    waiters = [asyncio.ensure_future(proc.wait())]
+    if cancel_event is not None:
+        waiters.append(asyncio.ensure_future(cancel_event.wait()))
+    status = "ok"
+    try:
+        done, _ = await asyncio.wait(waiters, timeout=timeout or None,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if not done:
+            status = "timeout"; _kill_tree()
+        elif cancel_event is not None and cancel_event.is_set():
+            status = "cancelled"; _kill_tree()
+        try:
+            await asyncio.wait_for(pump_task, timeout=2)   # drain remaining output
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+    except asyncio.CancelledError:                          # hard abort (whole turn cancelled)
+        _kill_tree(); status = "cancelled"
+        raise
+    finally:
+        for w in waiters:
+            w.cancel()
+        pump_task.cancel()
+    code = proc.returncode if status == "ok" else None
+    return CommandResult(_cap_output("".join(buf), output_cap), code, status)
 
 
 READ_CAP = 100_000  # chars of file content surfaced to the model

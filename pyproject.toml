@@ -37,7 +37,9 @@ packages = ["llamatui"]
 dev = [
     "textual-dev>=1.7",
     "pytest>=8",
+    "pytest-asyncio>=0.23",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,6 +1,10 @@
+import asyncio
+import sys
 from pathlib import Path
 
-from llamatui.filesystem import Workspace
+import pytest
+
+from llamatui.filesystem import Workspace, _cap_output, _default_runner, CommandResult
 
 
 def _ws(tmp_path) -> Workspace:
@@ -122,3 +126,33 @@ def test_delete_routes_to_trash_not_hard_delete(tmp_path):
     assert trashed == [str((tmp_path / "d.txt").resolve())]
     assert "recycle" in msg.lower() or "trash" in msg.lower()
     assert "outside your workspace" in ws.delete("../x")
+
+
+# ---- command runner tests ------------------------------------------------
+
+
+def test_cap_output_truncates_and_marks():
+    capped = _cap_output("x" * 50, 10)
+    assert capped.startswith("x" * 10) and "truncated" in capped
+
+
+@pytest.mark.asyncio
+async def test_runner_captures_output_and_exit(tmp_path):
+    res = await _default_runner(
+        f'{sys.executable} -c "print(123)"', cwd=str(tmp_path), timeout=30
+    )
+    assert isinstance(res, CommandResult)
+    assert "123" in res.output and res.exit_code == 0 and res.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_runner_cancel_event_kills_process(tmp_path):
+    ev = asyncio.Event()
+    task = asyncio.ensure_future(_default_runner(
+        f'{sys.executable} -c "import time; time.sleep(30)"',
+        cwd=str(tmp_path), timeout=30, cancel_event=ev,
+    ))
+    await asyncio.sleep(0.5)
+    ev.set()                      # cancel WITHOUT cancelling the task (turn must survive)
+    res = await asyncio.wait_for(task, timeout=10)
+    assert res.status == "cancelled"
