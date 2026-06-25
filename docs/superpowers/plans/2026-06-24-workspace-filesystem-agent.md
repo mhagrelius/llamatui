@@ -20,6 +20,10 @@
 - **`delete` routes to the OS recycle bin** via `send2trash` (required dep) — never a hard delete.
 - **Lean deps:** pure-Python `search` (no ripgrep). New dependency: `send2trash` only.
 - **Resume must not rebuild the prompt** — re-invoke `self.agent.run(...)` on the *same* agent so the KV prefix survives; never call `AgentBuilder.rebuild()` mid-turn.
+- **Resume carrier is a per-turn thread.** `generate()` creates one thread (`self.agent.get_new_thread()`) at the top of the turn and runs every segment on it (`run(..., session=thread, stream=True)`); on resume it submits **only** the approval-response message on the *same* thread (the thread already holds the in-flight assistant message carrying the `function_call`). Never hand-splice approval responses onto the flat `messages_for_agent()` list — that drops the assistant message and breaks the match. `Conversation` stays the source of truth for *persisted* history (user + answer); the thread is discarded at turn end.
+- **Workspace enters `AgentBuilder` through `rebuild()`**, not the constructor and not a setter — it is conversation-boundary state like `persona`/`volatile`. `rebuild(*, persona, volatile, settings, workspace=None)`.
+- **Metrics are summed across the multi-segment turn.** `TurnStream` accumulates `output`/`input`/`reasoning` token counts across `usage` blocks (sum, not overwrite); `context_used` stays the last segment's `total_tokens`; the worker excludes cumulative approval-pause time from `elapsed_s`.
+- **A new conversation resets the workspace** (`Conversation.new()` sets `workspace = None` → resolves to the Settings default). Persona carries forward; the working directory does not.
 - **Follow codebase idioms:** deep module + thin surface; injectable seams for impure inputs (runner, trash); the module interface is its test surface; `from __future__ import annotations`; frequent commits.
 
 ---
@@ -183,7 +187,7 @@ Exposes `write_file` as a gated `FunctionTool` and threads a `Workspace` through
   - `Workspace.build_tools(self) -> list[FunctionTool]`
   - `Workspace.workspace_line(self) -> str` → e.g. `"Workspace: C:\\proj · shell: PowerShell"`
   - `FILESYSTEM_GUIDANCE: str` (module constant)
-  - `AgentBuilder.__init__(..., workspace=None)`; `_capabilities()` appends fs tools + guidance and prepends the workspace line.
+  - `AgentBuilder.rebuild(*, persona, volatile, settings, workspace=None)` — stashes `self._workspace`, then `_capabilities()` appends fs tools + guidance and `rebuild` prepends the workspace line. (Workspace is conversation-boundary state, like `persona`/`volatile` — it does **not** go in the constructor; see Global Constraints.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -213,8 +217,8 @@ from llamatui.filesystem import Workspace
 
 
 def test_workspace_line_is_in_instructions(tmp_path):
-    b = AgentBuilder("http://x/v1", "m", workspace=Workspace(tmp_path, shell="PowerShell"))
-    b.rebuild(persona="P", volatile="D", settings=DEFAULTS)
+    b = AgentBuilder("http://x/v1", "m")
+    b.rebuild(persona="P", volatile="D", settings=DEFAULTS, workspace=Workspace(tmp_path, shell="PowerShell"))
     assert str(tmp_path.resolve()) in b.instructions
 ```
 
@@ -279,19 +283,11 @@ Annotate `write_file` params (the model reads these):
     ) -> str:
 ```
 
-In `llamatui/agent_builder.py`, extend the builder:
+In `llamatui/agent_builder.py`, add `self._workspace = None` in `__init__` (default; set per-rebuild — **not** a constructor param). Take `workspace` as a `rebuild()` parameter and compose the dynamic workspace line into capabilities (kept in the stable prefix, recomputed only here at conversation boundaries):
 
 ```python
-# __init__ signature:
-    def __init__(self, base_url, model, *, web_tool=None, memory=None, workspace=None) -> None:
-        ...
+    def rebuild(self, *, persona, volatile, settings, workspace=None):
         self._workspace = workspace
-```
-
-In `rebuild()`, compose the dynamic workspace line into capabilities (kept in the stable prefix, recomputed only here at conversation boundaries):
-
-```python
-    def rebuild(self, *, persona, volatile, settings):
         tools, notes, ambient = self._capabilities()
         lead = []
         if self._workspace is not None:
@@ -306,6 +302,8 @@ In `rebuild()`, compose the dynamic workspace line into capabilities (kept in th
         self._tools = tools
         return self._build(settings)
 ```
+
+`apply_sampling()` (mid-turn) reuses the cached `self._tools`, so a workspace constant within a conversation rides the existing cache-prefix split untouched.
 
 In `_capabilities()`, append the fs branch (and import the guidance):
 
@@ -387,9 +385,10 @@ def _describe(call) -> str:
 class ApprovalModal(ModalScreen[dict]):
     BINDINGS = [Binding("escape", "deny", "Deny")]
 
-    def __init__(self, requests: list) -> None:
+    def __init__(self, requests: list, *, workspace=None) -> None:
         super().__init__()
         self._requests = requests  # list of function_approval_request Content
+        self._workspace = workspace  # used for write_file diff previews (Task 15); unused until then
 
     def compose(self) -> ComposeResult:
         with Vertical(id="approval-box"):
@@ -422,22 +421,26 @@ In `app.py`, replace the body of `generate` (lines ~331-371). Key change: loop o
     async def generate(self, turn: AssistantTurn, user_text: str) -> None:
         self._busy = True
         self._approve_all = False
+        self._pause_s = 0.0                     # cumulative human-approval time, excluded from elapsed
         stream = TurnStream()
         view = TurnView(turn, on_status=self._on_turn_status)
-        messages = list(self.conversation.messages_for_agent())
+        thread = self.agent.get_new_thread()    # per-turn resume carrier (holds in-flight assistant msg)
+        pending = self.conversation.messages_for_agent()   # first segment: user + prior answers
 
         try:
             while True:
-                requests = []
-                async for update in self.agent.run(messages, stream=True):
+                stream_obj = self.agent.run(pending, session=thread, stream=True)
+                async for update in stream_obj:
                     stream.ingest(update)
                     view.reflect(stream.state)
-                    requests.extend(update.user_input_requests)
+                final = await stream_obj.get_final_response()
+                requests = list(final.user_input_requests)
                 if not requests:
                     break
                 responses = await self._resolve_approvals(requests, view)
-                # Re-run on the SAME agent (KV prefix intact); responses match calls by id.
-                messages = messages + [Message(role="user", contents=responses)]
+                # Resume on the SAME thread (it holds the assistant function_call) + SAME agent
+                # (KV prefix intact). Submit ONLY the approval responses.
+                pending = [Message(role="user", contents=responses)]
         except Exception as exc:
             view.reflect(stream.state, force=True)
             view.error(exc)
@@ -449,7 +452,8 @@ In `app.py`, replace the body of `generate` (lines ~331-371). Key change: loop o
         view.reflect(stream.state, force=True)
         st = stream.state
         m = M.extract(
-            st.usage_details, st.timings, ttft_s=st.ttft_s, elapsed_s=stream.elapsed(),
+            st.usage_details, st.timings, ttft_s=st.ttft_s,
+            elapsed_s=stream.elapsed() - self._pause_s,   # exclude human-approval time (Task 3.5)
             answer_chars=len(st.answer), context_window=self.context_window,
         )
         metrics_line = M.format_oneline(m)
@@ -466,19 +470,24 @@ In `app.py`, replace the body of `generate` (lines ~331-371). Key change: loop o
         self._busy = False
 
     async def _resolve_approvals(self, requests: list, view) -> list:
-        """Show the modal (unless already 'approve all'), return approval-response contents."""
+        """Show the modal (unless already 'approve all'), return approval-response contents.
+        Times the human pause so generate() can exclude it from elapsed (Task 3.5)."""
+        import time
         run_cmd = [r for r in requests if getattr(r.function_call, "name", "") == "run_command"]
         typed = [r for r in requests if r not in run_cmd]
         decided: dict = {}
-        # run_command is NEVER blanket-approved — always prompt for it.
-        to_prompt = list(run_cmd)
+        to_prompt = list(run_cmd)               # run_command is NEVER blanket-approved
         if self._approve_all:
             decided.update({r.id: True for r in typed})
         else:
             to_prompt += typed
         if to_prompt:
             self._status("awaiting approval")
-            result = await self.push_screen_wait(ApprovalModal(to_prompt))
+            t0 = time.monotonic()
+            result = await self.push_screen_wait(
+                ApprovalModal(to_prompt, workspace=self.workspace)
+            )
+            self._pause_s += time.monotonic() - t0
             result = result or {r.id: False for r in to_prompt}
             if result.pop("__all__", False):
                 self._approve_all = True
@@ -491,7 +500,7 @@ Add the import at the top of `app.py`: `from agent_framework import Message` (al
 
 - [ ] **Step 3: Temporary spike wiring**
 
-In `app.py __init__` add `self.workspace = None` and `self._approve_all = False`. In `on_mount`, before building the agent, add a temporary cwd workspace (replaced properly in Task 12):
+In `app.py __init__` add `self.workspace = None`, `self._approve_all = False`, and `self._pause_s = 0.0`. In `on_mount`, before building the agent, add a temporary cwd workspace (replaced properly in Task 11):
 
 ```python
         from .filesystem import Workspace
@@ -499,13 +508,13 @@ In `app.py __init__` add `self.workspace = None` and `self._approve_all = False`
             self.workspace = Workspace(Path.cwd())
 ```
 
-Pass it to the builder:
+The builder constructor is unchanged (no `workspace=`); instead, have `_rebuild_agent()` pass the workspace through `rebuild()` (workspace is conversation-boundary state):
 
 ```python
-        self._builder = AgentBuilder(
-            self.config.url, self.config.model,
-            web_tool=self.web_tool if self.web_enabled else None,
-            memory=self.memory, workspace=self.workspace,
+    def _rebuild_agent(self) -> None:
+        self.agent = self._builder.rebuild(
+            persona=self.conversation.system_prompt, volatile=_date_line(),
+            settings=self.settings, workspace=self.workspace,
         )
 ```
 
@@ -534,6 +543,65 @@ Expected: all four behave as described. If the streaming path does **not** surfa
 git add llamatui/approval.py llamatui/app.py llamatui/styles.tcss
 git commit -m "feat(fs): approval modal + generate() run-pause-resume loop (spike)"
 ```
+
+## Task 3.5: Metrics across the multi-segment turn
+
+A tool-using turn now spans several backend completions. `TurnStream` overwrites `usage` on each one, so token counts reflect only the final segment. Fix the token accounting to sum generated/reasoning tokens while keeping the last segment's prompt/total (the cumulative context). The elapsed pause-exclusion is already wired in `generate()` (Task 3: `_pause_s`); this task covers the `TurnStream` side and tests both.
+
+**Files:** Modify `llamatui/turn.py:179-181` (the `usage` branch of `_ingest_content`), `:141-146` (`__init__`); Test `tests/test_turn.py`
+
+**Interfaces:** Produces summed `state.usage_details["output_token_count"]` / `["reasoning_output_token_count"]` across segments; `input_token_count`/`total_token_count`/`cache_read_input_token_count` remain the **last** segment's (cumulative context).
+
+- [ ] **Step 1: Failing test**
+
+```python
+# tests/test_turn.py (append; mirror the file's existing fake-update style)
+from types import SimpleNamespace
+
+from llamatui.turn import TurnStream
+
+
+def _usage_update(out, reason):
+    c = SimpleNamespace(
+        type="usage",
+        usage_details={"output_token_count": out, "input_token_count": 100,
+                       "total_token_count": 100 + out, "reasoning_output_token_count": reason},
+        raw_representation=None,
+    )
+    return SimpleNamespace(contents=[c])
+
+
+def test_usage_sums_across_segments_keeps_last_context():
+    s = TurnStream()
+    s.ingest(_usage_update(10, 3))
+    s.ingest(_usage_update(20, 5))
+    u = s.state.usage_details
+    assert u["output_token_count"] == 30          # summed generated tokens
+    assert u["reasoning_output_token_count"] == 8  # summed reasoning
+    assert u["input_token_count"] == 100           # last segment's prompt
+    assert u["total_token_count"] == 120           # last segment's total (cumulative context)
+```
+
+- [ ] **Step 2: Run, expect FAIL** — `uv run pytest tests/test_turn.py::test_usage_sums_across_segments_keeps_last_context -v` (currently overwrites → output is 20, reasoning 5).
+
+- [ ] **Step 3: Implement** — in `TurnStream.__init__` add `self._out_sum = 0` and `self._reason_sum = 0`. Replace the `usage` branch:
+
+```python
+        elif ctype == "usage":
+            details = dict(getattr(c, "usage_details", None) or {})
+            self._out_sum += details.get("output_token_count") or 0
+            self._reason_sum += details.get("reasoning_output_token_count") or 0
+            if self._out_sum:
+                details["output_token_count"] = self._out_sum
+            if self._reason_sum:
+                details["reasoning_output_token_count"] = self._reason_sum
+            self.state.usage_details = details          # input/total stay last segment's
+            self.state.timings = _extract_timings(c)    # last segment's server rate
+```
+
+- [ ] **Step 4: Run, expect PASS**
+
+- [ ] **Step 5: Commit** — `git commit -am "feat(metrics): sum token counts across the multi-segment approval turn"`
 
 ---
 
@@ -649,7 +717,7 @@ Register in `build_tools()`: `FunctionTool(func=self.read_file, name="read_file"
 
 **Files:** Modify `llamatui/filesystem.py`; Test `tests/test_filesystem.py`
 
-**Interfaces:** Produces `Workspace.search(self, query: str, path: str = ".") -> str`; constants `SEARCH_FILE_CAP = 50`, `SEARCH_MATCH_CAP = 100`. Searches file **contents** (substring, case-insensitive) under `path`, skipping binaries; reports `relpath:lineno: line`.
+**Interfaces:** Produces `Workspace.search(self, query: str, path: str = ".") -> str`; constants `MAX_FILES_SCANNED = 2000`, `MAX_MATCHES = 100`, `MAX_FILE_BYTES = 1_000_000`, `SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache"}`. Searches file **contents** (substring, case-insensitive) under `path` via a **prunable `os.walk`** (skips noise dirs without descending), skipping binaries and oversized files; reports `relpath:lineno: line`; visible truncation markers when a cap is hit.
 
 - [ ] **Step 1: Failing test**
 
@@ -663,6 +731,14 @@ def test_search_finds_content_matches(tmp_path):
     assert "No matches" in _ws(tmp_path).search("zzz-not-present")
 
 
+def test_search_prunes_noise_dirs(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("foo here\n", encoding="utf-8")
+    (tmp_path / "keep.py").write_text("foo here\n", encoding="utf-8")
+    out = _ws(tmp_path).search("foo")
+    assert "keep.py" in out.replace("\\", "/") and ".git" not in out
+
+
 def test_search_outside_refused(tmp_path):
     assert "outside your workspace" in _ws(tmp_path).search("x", "..")
 ```
@@ -672,8 +748,12 @@ def test_search_outside_refused(tmp_path):
 - [ ] **Step 3: Implement**
 
 ```python
-SEARCH_FILE_CAP = 50
-SEARCH_MATCH_CAP = 100
+import os
+
+MAX_FILES_SCANNED = 2000
+MAX_MATCHES = 100
+MAX_FILE_BYTES = 1_000_000
+SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache"}
 
     def search(
         self,
@@ -685,26 +765,30 @@ SEARCH_MATCH_CAP = 100
             return OUTSIDE_MSG(self.root)
         needle = query.lower()
         hits: list[str] = []
-        files = 0
-        for fp in sorted(base.rglob("*")):
-            if not fp.is_file():
-                continue
-            files += 1
-            if files > SEARCH_FILE_CAP * 200:  # crude ceiling on tree walk work
-                break
-            try:
-                raw = fp.read_bytes()
-            except OSError:
-                continue
-            if b"\x00" in raw[:4096]:
-                continue
-            rel = fp.relative_to(self.root).as_posix()
-            for i, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), 1):
-                if needle in line.lower():
-                    hits.append(f"{rel}:{i}: {line.strip()[:200]}")
-                    if len(hits) >= SEARCH_MATCH_CAP:
-                        hits.append(f"[stopped at {SEARCH_MATCH_CAP} matches]")
-                        return "\n".join(hits)
+        scanned = 0
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)  # prune, don't descend
+            for name in sorted(filenames):
+                if scanned >= MAX_FILES_SCANNED:
+                    hits.append(f"[search stopped after {MAX_FILES_SCANNED} files]")
+                    return "\n".join(hits)
+                fp = Path(dirpath) / name
+                try:
+                    if fp.stat().st_size > MAX_FILE_BYTES:
+                        continue
+                    raw = fp.read_bytes()
+                except OSError:
+                    continue
+                scanned += 1
+                if b"\x00" in raw[:4096]:
+                    continue
+                rel = fp.relative_to(self.root).as_posix()
+                for i, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), 1):
+                    if needle in line.lower():
+                        hits.append(f"{rel}:{i}: {line.strip()[:200]}")
+                        if len(hits) >= MAX_MATCHES:
+                            hits.append(f"[stopped at {MAX_MATCHES} matches]")
+                            return "\n".join(hits)
         return "\n".join(hits) if hits else f"No matches for “{query}”."
 ```
 
@@ -859,7 +943,7 @@ Update `create_conversation` to accept and store `workspace`; add:
         self.db.commit()
 ```
 
-In `conversation.py`: add `self.workspace: str | None = None`; set it in `new()` (carry forward or default), `load()` (`self.workspace = conv["workspace"]`), and pass it in `append_assistant`'s `create_conversation(...)` call.
+In `conversation.py`: add `self.workspace: str | None = None`; in `new()` set `self.workspace = None` (a new chat resets to the Settings default — Global Constraints; persona carries forward, the working dir does not); in `load()` set `self.workspace = conv["workspace"]`; and pass `workspace=self.workspace` in `append_assistant`'s `create_conversation(...)` call.
 
 - [ ] **Step 4: Run, expect PASS**
 
@@ -921,7 +1005,18 @@ Map into `cli_overrides` (so `default_workspace` flows through settings preceden
         self.workspace = Workspace(self._resolve_workspace())
 ```
 
-Call `self._rebuild_workspace()` in `on_mount` (before building the builder), and inside `_rebuild_agent()` *before* `self._builder.rebuild(...)`, and ensure new/open conversation paths (`action_new_chat`, `open_conversation`) already call `_rebuild_agent()` — confirm they do (they do at lines 387, 409). Pass `workspace=self.workspace` to `AgentBuilder(...)`, and have the builder pick up the new workspace each rebuild: store the builder reference and update `self._builder._workspace = self.workspace` in `_rebuild_workspace`, OR reconstruct the builder. Simplest: set `self._builder._workspace = self.workspace` inside `_rebuild_workspace` when the builder exists.
+Fold `_rebuild_workspace()` into `_rebuild_agent()` so the workspace is recomputed before each rebuild and flows through `rebuild(workspace=...)` — **no private-attribute poke** (`rebuild()` already takes `workspace=`, per Task 3):
+
+```python
+    def _rebuild_agent(self) -> None:
+        self._rebuild_workspace()
+        self.agent = self._builder.rebuild(
+            persona=self.conversation.system_prompt, volatile=_date_line(),
+            settings=self.settings, workspace=self.workspace,
+        )
+```
+
+`_rebuild_agent()` is the single conversation-boundary entry point (called by `on_mount`, `action_new_chat`, `open_conversation`, and `/system` — lines 193, 387, 409, 311), so this covers every boundary without touching those call sites. The `AgentBuilder` constructor keeps **no** `workspace` param. Remove the Task-3 temporary cwd block from `on_mount` (this `_resolve_workspace` supersedes it).
 
 - [ ] **Step 4: Manual verification** — start two conversations with different `--workspace` defaults / set per-chat roots; confirm `list_dir(".")` reflects the right root in each, and switching chats re-points it. `--no-fs` removes the tools (ask the model to list files → it reports it can't).
 
@@ -972,7 +1067,7 @@ def test_parse_form_preserves_default_workspace(tmp_path):
   - `_cap_output(text: str, cap: int) -> str` (pure; appends `[output truncated, N lines]`)
   - `CMD_OUTPUT_CAP = 10_000`, `BACKSTOP_TIMEOUT_S = 900`
   - `_shell_argv(command: str) -> list[str]` (PowerShell on win32, `/bin/sh -c` elsewhere)
-  - `async _default_runner(command, *, cwd, on_output=None, output_cap=CMD_OUTPUT_CAP, timeout=BACKSTOP_TIMEOUT_S) -> CommandResult`
+  - `async _default_runner(command, *, cwd, on_output=None, output_cap=CMD_OUTPUT_CAP, timeout=BACKSTOP_TIMEOUT_S, cancel_event=None) -> CommandResult` (cancel via the event, not task cancellation, so the turn survives)
 
 - [ ] **Step 0: Add async test support** (confirmed absent from this repo). In `pyproject.toml`, add `"pytest-asyncio>=0.23"` to the dev dependency group, and under `[tool.pytest.ini_options]` add `asyncio_mode = "auto"` (so `async def test_*` run without per-test markers). Run `uv sync --dev`. With `asyncio_mode = "auto"` you may drop the explicit `@pytest.mark.asyncio` markers shown below.
 
@@ -1002,13 +1097,15 @@ async def test_runner_captures_output_and_exit(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_runner_cancel_kills_process(tmp_path):
+async def test_runner_cancel_event_kills_process(tmp_path):
+    ev = asyncio.Event()
     task = asyncio.ensure_future(_default_runner(
-        f'{sys.executable} -c "import time; time.sleep(30)"', cwd=str(tmp_path), timeout=30
+        f'{sys.executable} -c "import time; time.sleep(30)"',
+        cwd=str(tmp_path), timeout=30, cancel_event=ev,
     ))
     await asyncio.sleep(0.5)
-    task.cancel()
-    res = await task
+    ev.set()                      # cancel WITHOUT cancelling the task (turn must survive)
+    res = await asyncio.wait_for(task, timeout=10)
     assert res.status == "cancelled"
 ```
 
@@ -1048,7 +1145,7 @@ def _shell_argv(command: str) -> list[str]:
 
 
 async def _default_runner(command, *, cwd, on_output=None, output_cap=CMD_OUTPUT_CAP,
-                          timeout=BACKSTOP_TIMEOUT_S) -> CommandResult:
+                          timeout=BACKSTOP_TIMEOUT_S, cancel_event=None) -> CommandResult:
     creationflags = 0
     start_new_session = False
     if sys.platform == "win32":
@@ -1086,71 +1183,166 @@ async def _default_runner(command, *, cwd, on_output=None, output_cap=CMD_OUTPUT
             except Exception:
                 pass
 
+    # Race process completion against (a) the backstop timeout and (b) the cancel_event the
+    # App sets from the UI. Cancel via the EVENT — not task cancellation — so the worker (and
+    # thus the turn) survives and the agentic loop continues with a "cancelled" result.
+    pump_task = asyncio.ensure_future(_pump())
+    waiters = [asyncio.ensure_future(proc.wait())]
+    if cancel_event is not None:
+        waiters.append(asyncio.ensure_future(cancel_event.wait()))
     status = "ok"
     try:
-        await asyncio.wait_for(asyncio.gather(_pump(), proc.wait()),
-                               timeout=timeout if timeout else None)
-    except asyncio.TimeoutError:
-        _kill_tree()
-        status = "timeout"
-    except asyncio.CancelledError:
-        _kill_tree()
-        return CommandResult(_cap_output("".join(buf), output_cap), None, "cancelled")
-    return CommandResult(_cap_output("".join(buf), output_cap), proc.returncode, status)
+        done, _ = await asyncio.wait(waiters, timeout=timeout or None,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if not done:
+            status = "timeout"; _kill_tree()
+        elif cancel_event is not None and cancel_event.is_set():
+            status = "cancelled"; _kill_tree()
+        try:
+            await asyncio.wait_for(pump_task, timeout=2)   # drain remaining output
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+    except asyncio.CancelledError:                          # hard abort (whole turn cancelled)
+        _kill_tree(); status = "cancelled"
+        raise
+    finally:
+        for w in waiters:
+            w.cancel()
+        pump_task.cancel()
+    code = proc.returncode if status == "ok" else None
+    return CommandResult(_cap_output("".join(buf), output_cap), code, status)
 ```
 
 - [ ] **Step 4: Run, expect PASS**
 
 - [ ] **Step 5: Commit** — `git add -A && git commit -m "feat(fs): cancellable async command runner with output caps"`
 
-## Task 14: `run_command` tool + live streaming + cancel control
+## Task 14a: `run_command` tool + `Workspace` runtime sink/event + RUNNING phase
 
-**Files:** Modify `llamatui/filesystem.py`, `llamatui/turn.py`, `llamatui/turn_view.py`, `llamatui/widgets.py`, `llamatui/app.py`; Test `tests/test_filesystem.py`, `tests/test_turn.py`
+**Files:** Modify `llamatui/filesystem.py:Workspace`, `llamatui/turn.py`; Test `tests/test_filesystem.py`, `tests/test_turn.py`
 
 **Interfaces:**
-- Produces: `Workspace.run_command(self, command: str, *, on_output=None) -> str` (gated; delegates to `self._runner or _default_runner`, `cwd=self.root`); a `RUNNING`/`AWAITING` phase constant in `turn.py`; `TurnView` streams command output into the tool chip; a cancel affordance.
+- Produces: `Workspace.on_output` and `Workspace.cancel_event` (public runtime attributes the App sets per turn; default `None`); `Workspace.run_command(self, command: str) -> str` (gated; reads `self.on_output`/`self.cancel_event`, delegates to `self._runner or _default_runner`, `cwd=self.root`); `RUNNING = "running"` phase constant in `turn.py`, set when a `run_command` call is in-flight.
 
-- [ ] **Step 1: Failing test** (tool delegates to the injected runner, uses workspace cwd, caps via runner)
+Key insight (correcting the original Task 14): the framework calls `run_command(command=...)` without our kwargs, so the streaming sink and cancel event can't be passed at call time — they live as **instance state on the `Workspace`**, set by the App before the run. This is what makes live streaming and cancel-but-continue reachable (Q2).
+
+- [ ] **Step 1: Failing test**
 
 ```python
 @pytest.mark.asyncio
-async def test_run_command_uses_injected_runner_and_cwd(tmp_path):
+async def test_run_command_passes_runtime_sink_and_event_and_cwd(tmp_path):
     seen = {}
-    async def fake_runner(command, *, cwd, on_output=None, output_cap=0, timeout=0):
-        seen["command"] = command
-        seen["cwd"] = cwd
+    async def fake_runner(command, *, cwd, on_output=None, output_cap=0, timeout=0, cancel_event=None):
+        seen.update(command=command, cwd=cwd, on_output=on_output, cancel_event=cancel_event)
         return CommandResult("ran", 0, "ok")
     ws = Workspace(tmp_path, runner=fake_runner)
+    sink, ev = (lambda s: None), object()
+    ws.on_output, ws.cancel_event = sink, ev
     out = await ws.run_command("echo hi")
     assert seen["command"] == "echo hi" and seen["cwd"] == str(tmp_path.resolve())
+    assert seen["on_output"] is sink and seen["cancel_event"] is ev
     assert "ran" in out
+```
+
+```python
+# tests/test_turn.py (append) — a run_command call drives the RUNNING phase
+from types import SimpleNamespace
+from llamatui.turn import TurnStream, RUNNING
+
+
+def test_run_command_call_sets_running_phase():
+    s = TurnStream()
+    s.ingest(SimpleNamespace(contents=[SimpleNamespace(
+        type="function_call", name="run_command", call_id="c1", arguments='{"command":"ls"}')]))
+    assert s.state.phase == RUNNING
 ```
 
 - [ ] **Step 2: Run, expect FAIL**
 
-- [ ] **Step 3: Implement the tool**
+- [ ] **Step 3: Implement**
+
+In `Workspace.__init__` add `self.on_output = None` and `self.cancel_event = None`. Implement the tool:
 
 ```python
     async def run_command(
         self,
         command: Annotated[str, "Shell command to run in the workspace (asks for approval)."],
-        *,
-        on_output=None,
     ) -> str:
         runner = self._runner or _default_runner
-        res = await runner(command, cwd=str(self.root), on_output=on_output)
-        head = {"ok": "", "cancelled": "[cancelled by user]\n",
-                "timeout": "[timed out]\n"}[res.status]
+        res = await runner(command, cwd=str(self.root),
+                           on_output=self.on_output, cancel_event=self.cancel_event)
+        head = {"ok": "", "cancelled": "[cancelled by user]\n", "timeout": "[timed out]\n"}[res.status]
         code = "" if res.exit_code is None else f"\n(exit {res.exit_code})"
-        return f"{head}{res.output}{code}".strip() or f"{head.strip()} (no output){code}"
+        return f"{head}{res.output}{code}".strip() or f"{head}(no output){code}".strip()
 ```
 
-Register in `build_tools()` with `approval_mode="always_require"`.
+Register in `build_tools()` with `approval_mode="always_require"`. In `turn.py`, add `RUNNING = "running"` near the other phase constants, and in `TurnStream._ingest_call` set the phase to `RUNNING` for a `run_command` call (else `SEARCHING` as today):
 
-- [ ] **Step 4: Streaming + cancel wiring** (manual-verified):
-  - In `turn.py`, add a phase constant `RUNNING = "running"` and an `AWAITING = "awaiting approval"`; have the worker set `view`’s status accordingly (the status string already flows through `_on_turn_status`).
-  - The `on_output` callback isn’t reachable through the framework’s tool invocation (the agent calls `run_command` itself without our callback). For v1 streaming, the live signal comes from the **approval chip + elapsed timer**: after approval, set the chip label to `run_command · running… (m:ss)` via a `set_interval` tick in `app.py`, cleared when the tool result lands in `stream.state`. (Full stdout tailing into the chip — wiring `on_output` through a custom tool executor — is deferred; note this limitation in `CONTEXT.md`.)
-  - Cancel: while a command is running (`stream.state.phase == RUNNING`), `action_cancel` already cancels the `gen` group; ensure the worker’s `agent.run` cancellation propagates to the awaited `run_command` (it does, since it’s the same task tree) and the runner’s `CancelledError` branch kills the process. Confirm the chip shows `[cancelled by user]`.
+```python
+            self.state.phase = RUNNING if name == "run_command" else SEARCHING
+```
+
+- [ ] **Step 4: Run, expect PASS**
+
+- [ ] **Step 5: Commit** — `git commit -am "feat(fs): run_command tool + runtime sink/event + RUNNING phase"`
+
+## Task 14b: Live output streaming into the chip + phase-aware Esc cancel
+
+Wire the `Workspace` runtime sink to the in-flight chip and make Esc cancel just the command (turn continues) when one is running. Integration + manual verification (Textual UI).
+
+**Files:** Modify `llamatui/app.py` (`generate`, `_on_turn_status`, `action_cancel`), `llamatui/turn_view.py`, `llamatui/widgets.py:AssistantTurn`
+
+**Interfaces:**
+- Consumes: `Workspace.on_output`/`cancel_event` (14a), `RUNNING` (14a), `TurnView` chip bookkeeping.
+- Produces: `AssistantTurn.append_command_output(text: str)` (appends to a scrolling tail region under the running tool chip); `App._running_command: bool`.
+
+- [ ] **Step 1: Per-turn wiring in `generate()`.** Right after creating `view`, arm the workspace sink + a fresh cancel event:
+
+```python
+        if self.workspace is not None:
+            self.workspace.on_output = turn.append_command_output  # sink → the in-flight chip
+            self.workspace.cancel_event = asyncio.Event()
+```
+
+(The sink runs on the event loop — the runner calls it from within the awaited `run_command`, so the widget method can be called directly; no `call_from_thread` needed.)
+
+- [ ] **Step 2: Track the running phase** in `_on_turn_status` (it already receives `phase` on every render), and clear the cancel event when a command finishes so a *later* command in the same turn isn't auto-cancelled:
+
+```python
+    def _on_turn_status(self, phase: str, rate: float) -> None:
+        was = getattr(self, "_running_command", False)
+        self._running_command = phase == "running"
+        if was and not self._running_command and self.workspace and self.workspace.cancel_event:
+            self.workspace.cancel_event.clear()
+        self._status(f"{phase}…", detail=f"~{rate:.0f} tok/s", connected=True)
+        self.transcript.scroll_end(animate=False)
+```
+
+- [ ] **Step 3: Phase-aware `action_cancel`** — Esc cancels just the command (turn continues) when one runs; otherwise aborts the turn:
+
+```python
+    def action_cancel(self) -> None:
+        if not self._busy:
+            return
+        if getattr(self, "_running_command", False) and self.workspace and self.workspace.cancel_event:
+            self.workspace.cancel_event.set()      # kill the command; the runner returns "cancelled",
+            self._status("cancelling command…")    # the agentic loop continues — turn survives
+            return
+        self.workers.cancel_group(self, "gen")
+        self._busy = False
+        self._status("cancelled", connected=True)
+        if self.conversation is not None:
+            self.conversation.undo_last_user()
+```
+
+- [ ] **Step 4: The chip-output widget** — add `AssistantTurn.append_command_output(text)` that appends to a `Static`/`Log` tail region shown under the latest tool chip (cap the visible tail, e.g. last ~200 lines). Match the existing `AssistantTurn` widget idiom in `widgets.py`.
+
+- [ ] **Step 5: Manual verification** (live llama-server):
+  - Ask the model to run a quick command → approve → output **streams** into the chip; final result shows exit code.
+  - Ask it to run `sleep 30` (or `python -c "import time;time.sleep(30)"`) → approve → press **Esc** → the process dies within ~1s, the chip shows `[cancelled by user]`, and the **turn continues** (model acknowledges). A second Esc at the prompt aborts a fresh turn normally.
+  - Confirm a long real command (e.g. a build) is **not** killed by the backstop before ~15 min and can be watched via streamed output.
+
+- [ ] **Step 6: Commit** — `git add -A && git commit -m "feat(fs): live command-output streaming + phase-aware Esc cancel"`
 
 - [ ] **Step 5: Run unit test (PASS) + manual** — ask the model to run a quick command (approve → see output) and a `sleep 30` command (approve → cancel via Esc → process dies, chip shows cancelled, turn continues). Commit:
 
@@ -1234,13 +1426,13 @@ In `approval.py`, when a request’s `function_call.name == "write_file"`, rende
 ## Self-Review
 
 **Spec coverage check (spec §A–§L):**
-- §A build-vs-adopt → Task 1 (own module). §B per-conversation state → Tasks 9–11. §C dynamic workspace line → Task 2. §D module shape → Tasks 1–8 + Task 16. §E toolset/classification → Tasks 1,4–8,14. §F threat model: untrusted framing → Task 5; confined reads → Tasks 4–6; `run_command` approval-only/no-denylist → Task 14 (no denylist code exists). §G run_command mechanics → Tasks 13–14. §H approval gate/loop → Tasks 3,15. §I persistence/output budgets → Task 3 (no new persistence) + Task 13 (`_cap_output`). §J write preview → Task 15. §K settings/CLI → Tasks 10–12. §L testing → every task is TDD.
+- §A build-vs-adopt → Task 1 (own module). §B per-conversation state → Tasks 9–12. §C dynamic workspace line → Task 2 (via `rebuild()`). §D module shape → Tasks 1–8 + Task 16. §E toolset/classification → Tasks 1,4–8,14a. §F threat model: untrusted framing → Task 5; confined reads → Tasks 4–6; `run_command` approval-only/no-denylist → Tasks 14a (no denylist code exists). §G run_command mechanics → Tasks 13,14a,14b. §H approval gate/loop → Tasks 3,15; deny-continues + thread resume + run_command-excluded-from-approve-all → Task 3. §I persistence/output budgets → Task 3 (no new persistence) + Task 13 (`_cap_output`); **multi-segment metrics → Task 3.5**. §J write preview → Task 15. §K settings/CLI → Tasks 10–12. §L testing → every task is TDD.
 - **Accepted residual exfil risk (§F):** no code; documented in spec — no task needed.
-- **Gap noted:** full stdout tailing into the chip is deferred in Task 14 (elapsed-timer only); flagged there and in CONTEXT.md, consistent with spec §G "streamed output" being the ideal — confirm acceptable at execution or promote to a follow-up task.
+- **Streaming + cancel-but-continue (§G):** delivered, not deferred — Task 14a (runtime sink/`cancel_event` on `Workspace`) + Task 14b (chip streaming + phase-aware Esc). The earlier "elapsed-timer only" deferral was a bug, corrected during grilling (Q2).
 
-**Placeholder scan:** none — every code step carries complete code; commands have expected output.
+**Placeholder scan:** none — every code step carries complete code; commands have expected output. Tasks 14b/15 are integration-heavy with manual-verification steps (Textual UI), but each carries concrete code.
 
-**Type consistency:** `Workspace` ctor `(root, *, runner, trash, shell)` consistent across Tasks 1/8/13/14; `_confined` returns `Path | None` used uniformly; `CommandResult(output, exit_code, status)` consistent Tasks 13/14; `build_tools()` accreted tool-by-tool with stable names (`list_dir/read_file/search/write_file/move/delete/run_command`); `approval_mode` strings match the framework (`"always_require"`/default `never`).
+**Type consistency:** `Workspace` ctor `(root, *, runner, trash, shell)` + runtime attrs `on_output`/`cancel_event` consistent across Tasks 1/8/14a; `_confined` returns `Path | None` used uniformly; `CommandResult(output, exit_code, status)` consistent Tasks 13/14a; `_default_runner(..., cancel_event=None)` matches the `Workspace.run_command` call and the fake runners in tests; `AgentBuilder.rebuild(*, persona, volatile, settings, workspace=None)` consistent across Tasks 2/3/11 (no constructor `workspace`, no setter); `build_tools()` accreted with stable names (`list_dir/read_file/search/write_file/move/delete/run_command`); `approval_mode` strings match the framework (`"always_require"`/default `never`).
 
 ---
 
