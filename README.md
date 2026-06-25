@@ -18,8 +18,9 @@ experience, but pointed entirely at hardware you own.
 
 ## What's interesting about it
 
-- **Totally local by default.** The only thing that ever leaves your machine is a web search
-  query — and only if you enable the tool and the model decides to use it.
+- **Totally local by default.** The only things that ever leave your machine are a web-search
+  query and any web page the assistant fetches for you — and only if you enable those tools and
+  the model decides to use them.
 - **It remembers you.** A persistent, local **knowledge graph** (entities, facts, and how they
   relate) that the assistant builds about you across conversations — surfaced both as ambient
   context and via tools it calls itself. No server, no cloud; it lives in the same SQLite file
@@ -67,6 +68,13 @@ export EXA_API_KEY=your_key   # PowerShell: $env:EXA_API_KEY = "your_key"
 ```
 
 Disable it entirely with `--no-web`.
+
+### Reading web pages
+
+When the assistant has a URL — a search result, a link you paste, a citation — it can fetch the
+page and read its main content (converted to clean markdown) with the built-in `fetch_url` tool.
+It reads one page directly over HTTP and does not run JavaScript, so some app-like pages return
+little; it will say so. Disable it with `--no-fetch`.
 
 ### Memory
 
