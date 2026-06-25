@@ -17,6 +17,7 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 
+from agent_framework import Message
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -26,6 +27,7 @@ from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 from . import metrics as M
 from . import paths
 from .agent_builder import AgentBuilder
+from .approval import ApprovalModal
 from .client import detect_context_window, detect_model_id, humanize_model_name
 from .conversation import Conversation
 from .dictation import Dictation, State, build_recorder
@@ -107,6 +109,9 @@ class LlamaTUI(App):
         self.agent = None
         self._builder: AgentBuilder | None = None
         self._busy = False
+        self.workspace = None
+        self._approve_all = False
+        self._pause_s = 0.0
         self.store: Store | None = None
         self.conversation: Conversation | None = None
         self.web_tool = None
@@ -185,6 +190,12 @@ class LlamaTUI(App):
                 )
                 self.voice_enabled = True
 
+        # Temporary spike wiring: default the workspace to the cwd so the approval loop runs.
+        # Task 11 replaces this with a per-conversation, user-chosen workspace.
+        from .filesystem import Workspace
+        if getattr(self.config, "fs", True):
+            self.workspace = Workspace(Path.cwd())
+
         self._builder = AgentBuilder(
             self.config.url, self.config.model,
             web_tool=self.web_tool if self.web_enabled else None,
@@ -250,7 +261,8 @@ class LlamaTUI(App):
         """Conversation boundary: recompute the semi-volatile prompt + tools, rebuild the agent.
         Delegates the assembly + cache-prefix discipline to AgentBuilder."""
         self.agent = self._builder.rebuild(
-            persona=self.conversation.system_prompt, volatile=_date_line(), settings=self.settings,
+            persona=self.conversation.system_prompt, volatile=_date_line(),
+            settings=self.settings, workspace=self.workspace,
         )
 
     def _apply_agent(self) -> None:
@@ -331,13 +343,31 @@ class LlamaTUI(App):
     @work(exclusive=True, group="gen")
     async def generate(self, turn: AssistantTurn, user_text: str) -> None:
         self._busy = True
+        self._approve_all = False
+        self._pause_s = 0.0                       # cumulative human-approval time, excluded from elapsed
         stream = TurnStream()
         view = TurnView(turn, on_status=self._on_turn_status)
+        # Per-turn resume carrier: the session holds the in-flight assistant message (including any
+        # pending function_approval_request), so resuming on it preserves the run state. Verified:
+        # there is no `get_new_thread()`; the framework's per-run carrier is `create_session()`
+        # returning an AgentSession (agent_framework/_agents.py:411, _sessions.py:746).
+        session = self.agent.create_session()
+        pending = self.conversation.messages_for_agent()   # first segment: user + prior answers
 
         try:
-            async for update in self.agent.run(self.conversation.messages_for_agent(), stream=True):
-                stream.ingest(update)
-                view.reflect(stream.state)
+            while True:
+                stream_obj = self.agent.run(pending, session=session, stream=True)
+                async for update in stream_obj:
+                    stream.ingest(update)
+                    view.reflect(stream.state)
+                final = await stream_obj.get_final_response()
+                requests = list(final.user_input_requests)
+                if not requests:
+                    break
+                responses = await self._resolve_approvals(requests, view)
+                # Resume on the SAME session (it holds the assistant function_call) + SAME agent
+                # (KV prefix intact). Submit ONLY the approval responses.
+                pending = [Message(role="user", contents=responses)]
         except Exception as exc:
             view.reflect(stream.state, force=True)
             view.error(exc)
@@ -349,7 +379,8 @@ class LlamaTUI(App):
         view.reflect(stream.state, force=True)
         st = stream.state
         m = M.extract(
-            st.usage_details, st.timings, ttft_s=st.ttft_s, elapsed_s=stream.elapsed(),
+            st.usage_details, st.timings, ttft_s=st.ttft_s,
+            elapsed_s=stream.elapsed() - self._pause_s,   # exclude human-approval time (Task 3.5)
             answer_chars=len(st.answer), context_window=self.context_window,
         )
         metrics_line = M.format_oneline(m)
@@ -369,6 +400,32 @@ class LlamaTUI(App):
             ctx = f"ctx {m.context_used:,}/{m.context_window:,} ({m.context_frac*100:.0f}%)"
         self._status("ready", detail=ctx, connected=True)
         self._busy = False
+
+    async def _resolve_approvals(self, requests: list, view) -> list:
+        """Show the modal (unless already 'approve all'), return approval-response contents.
+        Times the human pause so generate() can exclude it from elapsed (Task 3.5)."""
+        import time
+        run_cmd = [r for r in requests if getattr(r.function_call, "name", "") == "run_command"]
+        typed = [r for r in requests if r not in run_cmd]
+        decided: dict = {}
+        to_prompt = list(run_cmd)               # run_command is NEVER blanket-approved
+        if self._approve_all:
+            decided.update({r.id: True for r in typed})
+        else:
+            to_prompt += typed
+        if to_prompt:
+            self._status("awaiting approval")
+            t0 = time.monotonic()
+            result = await self.push_screen_wait(
+                ApprovalModal(to_prompt, workspace=self.workspace)
+            )
+            self._pause_s += time.monotonic() - t0
+            result = result or {r.id: False for r in to_prompt}
+            if result.pop("__all__", False):
+                self._approve_all = True
+            decided.update(result)
+        return [r.to_function_approval_response(approved=bool(decided.get(r.id, False)))
+                for r in requests]
 
     # ---- conversation management ----------------------------------------
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
