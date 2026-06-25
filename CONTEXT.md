@@ -26,8 +26,8 @@ use these names in code, comments, and reviews rather than inventing new ones.
   invariant is enforced in two cooperating places: the **Conversation** (what enters history)
   and the chat client (what is sent on the wire, `client._prepare_message_for_openai`).
 
-- **Tool call** — a model-initiated invocation of a tool (Exa web search via MCP, or the
-  in-process memory tools). Represented by `turn.ToolCall` (name, streamed args, done flag,
+- **Tool call** — a model-initiated invocation of a tool (Exa web search via MCP, the
+  in-process memory tools, the filesystem workspace tools, or the in-process `fetch_url` web fetch). Represented by `turn.ToolCall` (name, streamed args, done flag,
   parsed primary arg (`query` for search, `url` for fetch, via `extract_query`), and the captured `result`/`failed`). The UI surfaces the actual result on the
   chip so "done" can't mask a no-op or error. A small local model sometimes *leaks* a tool call
   into its answer as plain text (`<tool_call><function=…>`); `strip_tool_noise` removes that from
