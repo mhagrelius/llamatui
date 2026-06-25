@@ -155,6 +155,31 @@ use these names in code, comments, and reviews rather than inventing new ones.
   inferred from a gap in the key's OS **auto-repeat** burst. See [[VoiceInput]] for the mapping and
   ADR-0002 for the hold mechanism.
 
+- **Workspace** — the per-conversation rooted file/system scope (`filesystem.py`). Owns the
+  resolved `root` path, the in/out **classification** predicate (`_confined`) that all read and
+  write tools share — an outside path returns a clear `OUTSIDE_MSG`, never escalates (the
+  framework's approval gate is static per tool name, so containment must be enforced here), and the
+  cancellable async command **runner** (`_default_runner`): process-tree kill (`taskkill /T` on
+  Windows, `SIGKILL` on the process group otherwise), a `CMD_OUTPUT_CAP` backstop, and a
+  `cancel_event` the App sets from the UI so the agentic loop survives a command cancel. Runtime
+  sinks (`on_output`, `cancel_event`) are set on the instance by `generate()` each turn, not at
+  construction.
+
+  The thin tool surface over it — `build_tools()` — exposes seven tools: read tools
+  (`list_dir` / `read_file` / `search`) run without a gate (default `never_require`); mutations
+  (`write_file` / `move` / `delete`) and `run_command` carry `approval_mode="always_require"`.
+  `delete` routes to the OS recycle bin (`send2trash`). `FILESYSTEM_GUIDANCE` is the static policy
+  block (file contents are *data*, never instructions; reads are confined; mutations and commands
+  need approval) spliced into the system prompt via [[AgentBuilder]]. Together `build_tools()` and
+  `FILESYSTEM_GUIDANCE` are the third tool *shape* in the app — local function tools that mutate
+  behind human approval — alongside remote-MCP (Exa) and the in-process memory tools.
+
+  Workspace is per-[[Conversation]] state: the root is persisted on the conversation row; a new
+  chat resets to the [[Settings]] `default_workspace`. Resolution is by precedence:
+  per-conversation > `Settings.default_workspace` > CLI/config `--workspace` > cwd. [[AgentBuilder]]
+  receives the resolved `Workspace` instance in `rebuild(workspace=...)` and composes the dynamic
+  `workspace_line()` ("Workspace: … · shell: …") into the system prompt's capabilities block.
+
 ## Architecture stance
 
 The Textual `App` (`app.py`) is a **thin adapter**: it wires widgets, keybindings, and the
@@ -181,3 +206,10 @@ boundaries only; `apply_sampling()` rebuilds the agent from those caches plus th
 prompt — and its KV prefix — never changes. This is also why opening the settings panel mid-stream
 is safe. (The App keeps one-line `_rebuild_agent`/`_apply_agent` wrappers that delegate to the
 builder — *when* to rebuild is the App's call; *how* to assemble is the builder's.)
+
+**Approval loop.** `app.generate()` is a run→pause→resume loop: each segment runs on a
+per-turn `agent.create_session()` session; when a gated tool fires the framework surfaces a
+`function_approval_request`, `generate()` pauses, shows a Textual `ApprovalModal`, then resumes on
+the *same* session and agent (KV prefix intact — `rebuild()` is never called mid-turn). `run_command`
+is excluded from blanket "approve all" and always surfaces the modal; Deny returns a denial
+response and the turn continues.
