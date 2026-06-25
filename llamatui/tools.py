@@ -13,6 +13,18 @@ from agent_framework import MCPStreamableHTTPTool
 
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 
+# The when-to-use note spliced into the system prompt's "Your tools" section (assembled by
+# AgentBuilder). Lives with the tool it describes; becomes this capability's description when web
+# search moves to an agent-framework skill. Policy only — what the tool *does* is in its own
+# description above, which the model also sees.
+WEB_SEARCH_GUIDANCE = (
+    "Web search (Exa): reach for it when the answer depends on current or fast-changing facts "
+    "(news, prices, releases and versions, dates, people, ongoing events), when asked to look "
+    "something up or handed a URL, or when you are not sure a fact is still true. Prefer searching "
+    "over guessing on anything time-sensitive. Use focused queries, corroborate what matters, and "
+    "cite the URLs. Do not search for stable knowledge or your own reasoning."
+)
+
 
 def build_exa_tool(url: str = EXA_MCP_URL) -> MCPStreamableHTTPTool:
     """Create (but don't yet connect) the Exa web-search MCP tool.

@@ -80,7 +80,19 @@ use these names in code, comments, and reviews rather than inventing new ones.
 - **Instructions** — `instructions.build_instructions()` composes the system prompt so the
   cache-prefix invariant is **structural**, not a convention: `volatile` (the date line) is a
   distinct, always-last slot; stable parts (persona → capability guidance → ambient memory
-  block) precede it by construction. Tested as a property in `tests/test_instructions.py`.
+  block) precede it by construction. Tested as a property in `tests/test_instructions.py`. It is
+  the pure composer; [[AgentBuilder]] is what feeds it.
+
+- **AgentBuilder** — the composition root (`agent_builder.py`) above the wire-level
+  `client.build_agent`. It assembles the agent from the enabled **features** (web, memory), the
+  conversation **persona** (falling back to the built-in `DEFAULT_SYSTEM`), the ambient memory
+  preamble, and the current **Settings** sampling — and owns the **cache-prefix split** as its
+  interface: `rebuild(persona, volatile, settings)` recomputes the semi-volatile prompt at
+  conversation boundaries, `apply_sampling(settings)` rebuilds the agent from the *cached* prompt
+  mid-turn so the KV prefix survives (`tests/test_agent_builder.py` pins this). The guidance→prompt
+  step is isolated in one private `_capabilities()` seam; each feature's when-to-use note lives in
+  the module that owns the tool (`tools.WEB_SEARCH_GUIDANCE`, `memory.MEMORY_GUIDANCE`), so a future
+  move to agent-framework **skills** changes only that seam, not the cache-prefix machinery.
 
 - **Dictation** — the *record → transcribe* state machine (`dictation.py`). Its interface is four
   verbs — `start` / `stop` / `cancel` / `toggle` — driven by [[VoiceInput]]; the transcribed text
@@ -149,10 +161,10 @@ The Textual `App` (`app.py`) is a **thin adapter**: it wires widgets, keybinding
 streaming worker, but delegates the genuinely complex jobs to deep modules — `TurnStream`
 (interpret the stream), `TurnView` (reflect a turn's state into its widget), `Conversation` (own
 history + persistence), `KnowledgeGraph` (facts + retrieval), `Memory` (the model-facing surface),
-and `VoiceInput` (map the `Ctrl+R` key stream to dictation verbs). The interface of each deep module
-is its test surface; see `tests/`.
+`AgentBuilder` (assemble the agent + own the cache-prefix split), and `VoiceInput` (map the `Ctrl+R`
+key stream to dictation verbs). The interface of each deep module is its test surface; see `tests/`.
 
-**Cache-prefix discipline.** `_rebuild_agent` builds the system prompt via
+**Cache-prefix discipline.** [[AgentBuilder]] builds the system prompt via
 `build_instructions(persona, capabilities, ambient, volatile=date)`, which guarantees the
 volatile date line lands **last** — because llama-server caches the longest stable prefix and
 the date is the only daily-volatile part. The invariant lives in the builder's *shape*, not a
@@ -162,8 +174,10 @@ conversation the whole prompt is constant and its KV prefix is reused; a fact th
 mid-turn shows up in Background/Recent at the next conversation switch (and is findable via
 `recall` in the meantime).
 
-The agent build is split for this: `_build_instructions` composes the (semi-volatile) system
-prompt and caches it + the conversation-stable tools at conversation boundaries only;
-`_apply_agent` rebuilds the agent from those caches plus the current **Settings** sampling. A
-mid-conversation sampling change calls `_apply_agent` alone, so the prompt — and its KV prefix —
-never changes. This is also why opening the settings panel mid-stream is safe.
+The agent build is split for this, behind [[AgentBuilder]]'s interface: `rebuild()` composes the
+(semi-volatile) system prompt and caches it + the conversation-stable tools at conversation
+boundaries only; `apply_sampling()` rebuilds the agent from those caches plus the current
+**Settings** sampling. A mid-conversation sampling change calls `apply_sampling()` alone, so the
+prompt — and its KV prefix — never changes. This is also why opening the settings panel mid-stream
+is safe. (The App keeps one-line `_rebuild_agent`/`_apply_agent` wrappers that delegate to the
+builder — *when* to rebuild is the App's call; *how* to assemble is the builder's.)
