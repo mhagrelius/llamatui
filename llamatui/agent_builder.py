@@ -18,6 +18,7 @@ so adopting agent-framework skills later moves out through that one seam.
 from __future__ import annotations
 
 from .client import build_agent
+from .filesystem import FILESYSTEM_GUIDANCE
 from .instructions import build_instructions
 from .memory import MEMORY_GUIDANCE
 from .tools import WEB_SEARCH_GUIDANCE
@@ -63,6 +64,7 @@ class AgentBuilder:
         self._model = model
         self._web_tool = web_tool
         self._memory = memory
+        self._workspace = None
         self._instructions: str = ""
         self._tools: list = []
 
@@ -75,9 +77,13 @@ class AgentBuilder:
         return list(self._tools)
 
     # ---- boundary: recompute the semi-volatile prompt --------------------
-    def rebuild(self, *, persona: str | None, volatile: str | None, settings):
+    def rebuild(self, *, persona: str | None, volatile: str | None, settings, workspace=None):
+        self._workspace = workspace
         tools, notes, ambient = self._capabilities()
-        capabilities = (
+        lead = []
+        if self._workspace is not None:
+            lead.append(self._workspace.workspace_line())
+        capabilities = lead + (
             ["Your tools (use them deliberately):\n\n" + "\n\n".join(notes)] if notes else []
         )
         self._instructions = build_instructions(
@@ -103,6 +109,9 @@ class AgentBuilder:
             tools.extend(self._memory.build_tools())
             notes.append(MEMORY_GUIDANCE)
             ambient = self._memory.preamble()
+        if self._workspace is not None:
+            tools.extend(self._workspace.build_tools())
+            notes.append(FILESYSTEM_GUIDANCE)
         return tools, notes, ambient
 
     # ---- mid-turn: reuse the cached prompt -------------------------------

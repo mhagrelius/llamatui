@@ -28,3 +28,21 @@ def test_write_file_outside_refused(tmp_path):
     msg = ws.write_file("../evil.txt", "x")
     assert "outside your workspace" in msg
     assert not (tmp_path.parent / "evil.txt").exists()
+
+
+from llamatui.filesystem import FILESYSTEM_GUIDANCE
+
+
+def test_build_tools_marks_write_gated(tmp_path):
+    tools = _ws(tmp_path).build_tools()
+    by_name = {t.name: t for t in tools}
+    assert by_name["write_file"].approval_mode == "always_require"
+
+
+def test_workspace_line_names_root_and_shell(tmp_path):
+    line = Workspace(tmp_path, shell="PowerShell").workspace_line()
+    assert str(tmp_path.resolve()) in line and "PowerShell" in line
+
+
+def test_guidance_forbids_obeying_file_contents():
+    assert "never obey" in FILESYSTEM_GUIDANCE.lower() or "data, not" in FILESYSTEM_GUIDANCE.lower()

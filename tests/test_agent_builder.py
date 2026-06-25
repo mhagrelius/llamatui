@@ -88,3 +88,12 @@ def test_ambient_recomputed_each_rebuild():
     mem._preamble = "second"                                 # memory learned something new
     b.rebuild(persona="P", volatile="d", settings=DEFAULTS)
     assert "second" in b.instructions and "first" not in b.instructions
+
+
+from llamatui.filesystem import Workspace
+
+
+def test_workspace_line_is_in_instructions(tmp_path):
+    b = AgentBuilder("http://x/v1", "m")
+    b.rebuild(persona="P", volatile="D", settings=DEFAULTS, workspace=Workspace(tmp_path, shell="PowerShell"))
+    assert str(tmp_path.resolve()) in b.instructions
