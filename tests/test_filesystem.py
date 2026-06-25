@@ -73,3 +73,24 @@ def test_read_file_caps_large_and_flags_binary(tmp_path):
 
 def test_read_file_outside_refused(tmp_path):
     assert "outside your workspace" in _ws(tmp_path).read_file("../x")
+
+
+def test_search_finds_content_matches(tmp_path):
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("nothing here\n", encoding="utf-8")
+    out = _ws(tmp_path).search("foo")
+    assert "a.py:1" in out.replace("\\", "/") and "def foo" in out
+    assert "b.py" not in out
+    assert "No matches" in _ws(tmp_path).search("zzz-not-present")
+
+
+def test_search_prunes_noise_dirs(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("foo here\n", encoding="utf-8")
+    (tmp_path / "keep.py").write_text("foo here\n", encoding="utf-8")
+    out = _ws(tmp_path).search("foo")
+    assert "keep.py" in out.replace("\\", "/") and ".git" not in out
+
+
+def test_search_outside_refused(tmp_path):
+    assert "outside your workspace" in _ws(tmp_path).search("x", "..")

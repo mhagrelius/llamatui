@@ -9,6 +9,7 @@ tool surface (build_tools/FILESYSTEM_GUIDANCE) only phrases it for the model.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -17,6 +18,10 @@ from agent_framework import FunctionTool
 
 
 READ_CAP = 100_000  # chars of file content surfaced to the model
+MAX_FILES_SCANNED = 2000
+MAX_MATCHES = 100
+MAX_FILE_BYTES = 1_000_000
+SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache"}
 
 
 FILESYSTEM_GUIDANCE = (
@@ -91,6 +96,42 @@ class Workspace:
         rel = target.relative_to(self.root).as_posix()
         return f'<file_contents path="{rel}">\n{text}\n</file_contents>{note}'
 
+    def search(
+        self,
+        query: Annotated[str, "Text to find in file contents (case-insensitive substring)."],
+        path: Annotated[str, "Workspace-relative directory to search under."] = ".",
+    ) -> str:
+        base = self._confined(path)
+        if base is None:
+            return OUTSIDE_MSG(self.root)
+        needle = query.lower()
+        hits: list[str] = []
+        scanned = 0
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)  # prune, don't descend
+            for name in sorted(filenames):
+                if scanned >= MAX_FILES_SCANNED:
+                    hits.append(f"[search stopped after {MAX_FILES_SCANNED} files]")
+                    return "\n".join(hits)
+                fp = Path(dirpath) / name
+                try:
+                    if fp.stat().st_size > MAX_FILE_BYTES:
+                        continue
+                    raw = fp.read_bytes()
+                except OSError:
+                    continue
+                scanned += 1
+                if b"\x00" in raw[:4096]:
+                    continue
+                rel = fp.relative_to(self.root).as_posix()
+                for i, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), 1):
+                    if needle in line.lower():
+                        hits.append(f"{rel}:{i}: {line.strip()[:200]}")
+                        if len(hits) >= MAX_MATCHES:
+                            hits.append(f"[stopped at {MAX_MATCHES} matches]")
+                            return "\n".join(hits)
+        return "\n".join(hits) if hits else f'No matches for "{query}".'
+
     def workspace_line(self) -> str:
         return f"Workspace: {self.root} · shell: {self._shell or _default_shell_name()}"
 
@@ -100,6 +141,8 @@ class Workspace:
                          description="List entries in a workspace directory."),
             FunctionTool(func=self.read_file, name="read_file",
                          description="Read a file from the workspace."),
+            FunctionTool(func=self.search, name="search",
+                         description="Search workspace file contents for text."),
             FunctionTool(
                 func=self.write_file, name="write_file",
                 description="Create or overwrite a file in the workspace (full contents).",
