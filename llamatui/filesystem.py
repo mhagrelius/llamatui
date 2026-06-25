@@ -10,6 +10,7 @@ tool surface (build_tools/FILESYSTEM_GUIDANCE) only phrases it for the model.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import os
 import shutil
 import sys
@@ -115,6 +116,7 @@ async def _default_runner(command, *, cwd, on_output=None, output_cap=CMD_OUTPUT
 
 
 READ_CAP = 100_000  # chars of file content surfaced to the model
+PREVIEW_CAP = 8_000  # chars of new content / diff shown in the approval modal
 MAX_FILES_SCANNED = 2000
 MAX_MATCHES = 100
 MAX_FILE_BYTES = 1_000_000
@@ -236,6 +238,38 @@ class Workspace:
                             hits.append(f"[stopped at {MAX_MATCHES} matches]")
                             return "\n".join(hits)
         return "\n".join(hits) if hits else f'No matches for "{query}".'
+
+    def preview_write(self, path: str, content: str) -> str:
+        """Return a human-readable preview of what write_file(path, content) would do.
+
+        - New file: labeled header + content (capped to PREVIEW_CAP).
+        - Overwrite, small text: unified diff (capped).
+        - Overwrite, huge or binary: size-summary only.
+        - Outside workspace: OUTSIDE_MSG.
+        """
+        target = self._confined(path)
+        if target is None:
+            return OUTSIDE_MSG(self.root)
+        rel = (
+            target.relative_to(self.root).as_posix()
+            if (self.root in target.parents or target == self.root)
+            else path
+        )
+        if not target.exists():
+            body = content if len(content) <= PREVIEW_CAP else content[:PREVIEW_CAP] + "\n[…]"
+            return f"new file: {rel}\n\n{body}"
+        old = target.read_bytes()
+        if b"\x00" in old[:4096] or len(old) > PREVIEW_CAP or len(content) > PREVIEW_CAP:
+            return f"overwrite {rel}: {len(old)} bytes → {len(content)} bytes"
+        diff = difflib.unified_diff(
+            old.decode("utf-8", errors="replace").splitlines(),
+            content.splitlines(),
+            lineterm="",
+            n=3,
+            fromfile=f"a/{rel}",
+            tofile=f"b/{rel}",
+        )
+        return f"overwrite {rel}\n\n" + "\n".join(diff)
 
     def workspace_line(self) -> str:
         return f"Workspace: {self.root} · shell: {self._shell or _default_shell_name()}"

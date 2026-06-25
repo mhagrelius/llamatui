@@ -41,12 +41,31 @@ class ApprovalModal(ModalScreen[dict]):
         self._requests = requests  # list of function_approval_request Content
         self._workspace = workspace  # used for write_file diff previews (Task 15); unused until then
 
+    def _render_call(self, call) -> str:
+        """Return the display text for a single pending function_call.
+
+        For write_file, show a diff/preview via workspace.preview_write if a workspace
+        is available; otherwise fall back to the one-liner _describe.
+        """
+        name = getattr(call, "name", "?")
+        if name == "write_file" and self._workspace is not None:
+            args = getattr(call, "arguments", "") or ""
+            try:
+                import json
+                parsed = json.loads(args) if isinstance(args, str) else dict(args)
+            except Exception:
+                parsed = {}
+            path = parsed.get("path", "")
+            content = parsed.get("content", "")
+            return self._workspace.preview_write(path, content)
+        return _describe(call)
+
     def compose(self) -> ComposeResult:
         with Vertical(id="approval-box"):
             yield Static("[b]Approve action?[/b]", id="approval-title")
             with VerticalScroll(id="approval-body"):
                 for req in self._requests:
-                    yield Static(_describe(req.function_call), classes="approval-call")
+                    yield Static(self._render_call(req.function_call), classes="approval-call")
             yield Button("Approve", id="approve", variant="success")
             yield Button("Approve all this turn", id="approve-all", variant="warning")
             yield Button("Deny", id="deny", variant="error")

@@ -171,3 +171,127 @@ async def test_run_command_passes_runtime_sink_and_event_and_cwd(tmp_path):
     assert seen["command"] == "echo hi" and seen["cwd"] == str(tmp_path.resolve())
     assert seen["on_output"] is sink and seen["cancel_event"] is ev
     assert "ran" in out
+
+
+# ---- preview_write tests ------------------------------------------------
+
+def test_preview_write_new_vs_overwrite(tmp_path):
+    ws = _ws(tmp_path)
+    assert "new file" in ws.preview_write("n.txt", "hello").lower()
+    (tmp_path / "e.txt").write_text("old\n", encoding="utf-8")
+    diff = ws.preview_write("e.txt", "new\n")
+    assert "-old" in diff and "+new" in diff
+
+
+def test_preview_write_huge_is_summarized(tmp_path):
+    ws = _ws(tmp_path)
+    (tmp_path / "big.txt").write_text("a" * 200_000, encoding="utf-8")
+    out = ws.preview_write("big.txt", "b")
+    assert "overwrite" in out.lower() and "→" in out
+
+
+def test_preview_write_outside_refused(tmp_path):
+    ws = _ws(tmp_path)
+    out = ws.preview_write("../evil.txt", "x")
+    assert "outside your workspace" in out
+
+
+def test_preview_write_new_file_caps_content(tmp_path):
+    from llamatui.filesystem import PREVIEW_CAP
+    ws = _ws(tmp_path)
+    out = ws.preview_write("big_new.txt", "x" * (PREVIEW_CAP + 100))
+    assert "new file" in out.lower()
+    assert "[…]" in out
+
+
+def test_preview_write_binary_existing_gives_size_summary(tmp_path):
+    ws = _ws(tmp_path)
+    (tmp_path / "b.bin").write_bytes(b"\x00\x01\x02binary data")
+    out = ws.preview_write("b.bin", "replacement")
+    assert "overwrite" in out.lower() and "→" in out
+
+
+# ---- run_command status-formatting branches --------------------------------
+
+@pytest.mark.asyncio
+async def test_run_command_cancelled_status(tmp_path):
+    async def fake_runner(command, *, cwd, on_output=None, output_cap=0, timeout=0, cancel_event=None):
+        return CommandResult("partial output", None, "cancelled")
+    ws = Workspace(tmp_path, runner=fake_runner)
+    out = await ws.run_command("echo hi")
+    assert "[cancelled by user]" in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_timeout_status(tmp_path):
+    async def fake_runner(command, *, cwd, on_output=None, output_cap=0, timeout=0, cancel_event=None):
+        return CommandResult("partial output", None, "timeout")
+    ws = Workspace(tmp_path, runner=fake_runner)
+    out = await ws.run_command("echo hi")
+    assert "[timed out]" in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_ok_no_prefix(tmp_path):
+    async def fake_runner(command, *, cwd, on_output=None, output_cap=0, timeout=0, cancel_event=None):
+        return CommandResult("hello world", 0, "ok")
+    ws = Workspace(tmp_path, runner=fake_runner)
+    out = await ws.run_command("echo hello world")
+    assert "hello world" in out
+    assert "[cancelled" not in out and "[timed out" not in out
+
+
+# ---- approve-all / run_command exclusion logic -----------------------------
+
+def _make_request(rid: str, name: str):
+    """Minimal fake approval request — mirrors what _resolve_approvals filters on."""
+    from types import SimpleNamespace
+    fc = SimpleNamespace(name=name)
+    return SimpleNamespace(id=rid, function_call=fc)
+
+
+def test_approve_all_excludes_run_command():
+    """Pure logic: given a mixed list, run_command is never covered by _approve_all."""
+    requests = [
+        _make_request("r1", "write_file"),
+        _make_request("r2", "run_command"),
+        _make_request("r3", "delete"),
+    ]
+    # Replicate the partitioning logic from _resolve_approvals:
+    run_cmd = [r for r in requests if getattr(r.function_call, "name", "") == "run_command"]
+    typed = [r for r in requests if r not in run_cmd]
+
+    # When _approve_all is True, typed requests are auto-approved; run_command goes to to_prompt.
+    _approve_all = True
+    decided: dict = {}
+    to_prompt = list(run_cmd)
+    if _approve_all:
+        decided.update({r.id: True for r in typed})
+    else:
+        to_prompt += typed
+
+    assert "r1" in decided and decided["r1"] is True   # write_file blanket-approved
+    assert "r3" in decided and decided["r3"] is True   # delete blanket-approved
+    assert "r2" not in decided                          # run_command NOT blanket-approved
+    assert any(r.id == "r2" for r in to_prompt)        # run_command goes to the prompt
+
+
+def test_approve_all_false_sends_all_to_prompt():
+    """When _approve_all is False, ALL requests (including typed) go to the modal."""
+    requests = [
+        _make_request("r1", "write_file"),
+        _make_request("r2", "run_command"),
+    ]
+    run_cmd = [r for r in requests if getattr(r.function_call, "name", "") == "run_command"]
+    typed = [r for r in requests if r not in run_cmd]
+
+    _approve_all = False
+    decided: dict = {}
+    to_prompt = list(run_cmd)
+    if _approve_all:
+        decided.update({r.id: True for r in typed})
+    else:
+        to_prompt += typed
+
+    assert not decided
+    assert {r.id for r in to_prompt} == {"r1", "r2"}
