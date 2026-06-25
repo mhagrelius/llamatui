@@ -156,3 +156,18 @@ async def test_runner_cancel_event_kills_process(tmp_path):
     ev.set()                      # cancel WITHOUT cancelling the task (turn must survive)
     res = await asyncio.wait_for(task, timeout=10)
     assert res.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_run_command_passes_runtime_sink_and_event_and_cwd(tmp_path):
+    seen = {}
+    async def fake_runner(command, *, cwd, on_output=None, output_cap=0, timeout=0, cancel_event=None):
+        seen.update(command=command, cwd=cwd, on_output=on_output, cancel_event=cancel_event)
+        return CommandResult("ran", 0, "ok")
+    ws = Workspace(tmp_path, runner=fake_runner)
+    sink, ev = (lambda s: None), object()
+    ws.on_output, ws.cancel_event = sink, ev
+    out = await ws.run_command("echo hi")
+    assert seen["command"] == "echo hi" and seen["cwd"] == str(tmp_path.resolve())
+    assert seen["on_output"] is sink and seen["cancel_event"] is ev
+    assert "ran" in out

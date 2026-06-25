@@ -155,3 +155,11 @@ def test_usage_sums_across_segments_keeps_last_context():
     assert u["reasoning_output_token_count"] == 8  # summed reasoning
     assert u["input_token_count"] == 100           # last segment's prompt
     assert u["total_token_count"] == 120           # last segment's total (cumulative context)
+
+
+def test_run_command_call_sets_running_phase():
+    from llamatui.turn import RUNNING
+    s = TurnStream()
+    s.ingest(SimpleNamespace(contents=[SimpleNamespace(
+        type="function_call", name="run_command", call_id="c1", arguments='{"command":"ls"}')]))
+    assert s.state.phase == RUNNING

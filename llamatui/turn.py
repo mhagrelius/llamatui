@@ -24,6 +24,7 @@ from typing import Any, Callable
 THINKING = "thinking"
 SEARCHING = "searching"
 WRITING = "writing"
+RUNNING = "running"
 
 _QUERY_RE = re.compile(r'"query"\s*:\s*"([^"]*)"')
 
@@ -197,7 +198,7 @@ class TurnStream:
             call = ToolCall(call_id=cid, name=name)
             self._calls[cid] = call
             self.state.tool_calls.append(call)
-            self.state.phase = SEARCHING
+            self.state.phase = RUNNING if name == "run_command" else SEARCHING
         args = getattr(c, "arguments", None)
         if args and self._current is not None:
             self._calls[self._current].args += args

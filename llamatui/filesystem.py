@@ -156,6 +156,8 @@ class Workspace:
         self._runner = runner
         self._trash = trash
         self._shell = shell
+        self.on_output = None
+        self.cancel_event = None
 
     # ---- classification / path safety -----------------------------------
     def _confined(self, path: str) -> Path | None:
@@ -238,6 +240,17 @@ class Workspace:
     def workspace_line(self) -> str:
         return f"Workspace: {self.root} · shell: {self._shell or _default_shell_name()}"
 
+    async def run_command(
+        self,
+        command: Annotated[str, "Shell command to run in the workspace (asks for approval)."],
+    ) -> str:
+        runner = self._runner or _default_runner
+        res = await runner(command, cwd=str(self.root),
+                           on_output=self.on_output, cancel_event=self.cancel_event)
+        head = {"ok": "", "cancelled": "[cancelled by user]\n", "timeout": "[timed out]\n"}[res.status]
+        code = "" if res.exit_code is None else f"\n(exit {res.exit_code})"
+        return f"{head}{res.output}{code}".strip() or f"{head}(no output){code}".strip()
+
     def build_tools(self) -> list[FunctionTool]:
         return [
             FunctionTool(func=self.list_dir, name="list_dir",
@@ -259,6 +272,11 @@ class Workspace:
             FunctionTool(
                 func=self.delete, name="delete",
                 description="Delete a file or directory, sending it to the recycle bin.",
+                approval_mode="always_require",
+            ),
+            FunctionTool(
+                func=self.run_command, name="run_command",
+                description="Run a shell command in the workspace (asks for approval).",
                 approval_mode="always_require",
             ),
         ]
