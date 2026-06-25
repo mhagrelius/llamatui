@@ -5,12 +5,20 @@ use these names in code, comments, and reviews rather than inventing new ones.
 
 ## Domain nouns
 
-- **Turn** — one assistant reply to one user message. A turn arrives as a *stream* and is
-  folded into structured state by the **`TurnStream`** module (`turn.py`). Its `TurnState`
-  separates **Thinking** from **Answer** and tracks any **Tool calls**, ttft, and usage /
-  timings. `TurnStream` is also the single place that knows llama-server's non-standard wire
-  shape (the content-type vocabulary and where llama.cpp hides its `timings` block) — the
-  *wire-adapter* seam lives here, not smeared across the worker and metrics.
+- **Turn** — one assistant reply to one user message, handled by **two mirrored folds**. A turn
+  arrives as a *stream* and is folded into structured state by the **`TurnStream`** module
+  (`turn.py`): its `TurnState` separates **Thinking** from **Answer** and tracks any **Tool
+  calls**, ttft, and usage / timings. `TurnStream` is also the single place that knows
+  llama-server's non-standard wire shape (the content-type vocabulary and where llama.cpp hides its
+  `timings` block) — the *wire-adapter* seam lives here, not smeared across the worker and metrics.
+  The reverse fold is **`TurnView`** (`turn_view.py`): it folds a `TurnState` into one
+  **`AssistantTurn`** widget, owning the render throttle, the live `~tok/s` estimate (surfaced to
+  the App's `StatusBar` via an `on_status` callback), tool-chip bookkeeping, the thinking-pane
+  settle policy, and the persisted-metrics blob shape — shared by the live `generate` worker and
+  the **replay** path (`load_saved`) so both render a turn one way. The worker speaks only to
+  `TurnStream` (in) and `TurnView` (out); `AssistantTurn` is a *mechanical* widget (dumb setters),
+  with all presentation policy in `TurnView`. Both folds are clock-injected and tested with no
+  Textual (`tests/test_turn.py`, `tests/test_turn_view.py`).
 
 - **Thinking vs. Answer** — a turn has two text streams: the model's reasoning
   (`text_reasoning`, shown in a collapsible pane) and its actual answer (`text`). Thinking is
@@ -139,9 +147,10 @@ use these names in code, comments, and reviews rather than inventing new ones.
 
 The Textual `App` (`app.py`) is a **thin adapter**: it wires widgets, keybindings, and the
 streaming worker, but delegates the genuinely complex jobs to deep modules — `TurnStream`
-(interpret the stream), `Conversation` (own history + persistence), `KnowledgeGraph` (facts +
-retrieval), `Memory` (the model-facing surface), and `VoiceInput` (map the `Ctrl+R` key stream to
-dictation verbs). The interface of each deep module is its test surface; see `tests/`.
+(interpret the stream), `TurnView` (reflect a turn's state into its widget), `Conversation` (own
+history + persistence), `KnowledgeGraph` (facts + retrieval), `Memory` (the model-facing surface),
+and `VoiceInput` (map the `Ctrl+R` key stream to dictation verbs). The interface of each deep module
+is its test surface; see `tests/`.
 
 **Cache-prefix discipline.** `_rebuild_agent` builds the system prompt via
 `build_instructions(persona, capabilities, ambient, volatile=date)`, which guarantees the

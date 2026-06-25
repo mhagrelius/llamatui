@@ -152,18 +152,6 @@ class AssistantTurn(Vertical):
         if classes:
             widget.set_classes(f"turn-metrics {classes}")
 
-    def load_saved(self, *, answer: str, reasoning: str | None, metrics_line: str | None) -> None:
-        """Populate a turn from persisted data (no streaming)."""
-        if reasoning:
-            self.set_reasoning(reasoning)
-            self.set_think_title("Thinking")
-            self.collapse_thinking()
-        else:
-            self.drop_thinking()
-        self.set_answer(answer)
-        if metrics_line:
-            self.set_metrics(metrics_line)
-
 
 def render_status(*, model: str, state: str, detail: str, connected: bool, voice: str) -> Text:
     dot = "●" if connected else "○"

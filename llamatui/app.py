@@ -4,18 +4,16 @@ Features: streamed answers with a distinct thinking pane, live throughput metric
 web-search (remote MCP) the model can call on its own, and elia-style persisted
 conversations you can switch between from a sidebar.
 
-The App is deliberately thin. Two deep modules carry the load behind narrow interfaces:
-:class:`~llamatui.turn.TurnStream` folds the streamed turn into structured state, and
+The App is deliberately thin. Deep modules carry the load behind narrow interfaces:
+:class:`~llamatui.turn.TurnStream` folds the streamed turn into structured state,
+:class:`~llamatui.turn_view.TurnView` folds that state into the assistant-turn widget, and
 :class:`~llamatui.conversation.Conversation` owns the agent-facing history together with its
-persistence. The streaming worker here is just an *adapter* that pumps the accumulator and
-reflects its state into widgets.
+persistence. The streaming worker here just pumps `TurnStream` and hands its state to `TurnView`.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -41,7 +39,8 @@ from .settings import (
 from .settings_screen import SettingsScreen
 from .storage import Store, connect
 from .tools import build_exa_tool, exa_key_present
-from .turn import WRITING, TurnStream, strip_tool_noise
+from .turn import TurnStream, strip_tool_noise
+from .turn_view import TurnView, metrics_blob
 from .voice import VoiceInput, keyboard_initial_delay_s
 from .whisper import WhisperServer
 from .widgets import AssistantTurn, PromptArea, StatusBar, UserTurn
@@ -110,14 +109,6 @@ MEMORY_GUIDANCE = (
 )
 
 
-def _short_result(text: str | None, cap: int = 64) -> str | None:
-    """First line of a tool result, trimmed for the one-line tool-call chip."""
-    if not text:
-        return None
-    first = text.strip().splitlines()[0].strip()
-    return first if len(first) <= cap else first[: cap - 1].rstrip() + "…"
-
-
 def _date_line() -> str:
     # Kept last in the system prompt: it's the only volatile part, so the stable instruction
     # prefix above it stays identical day to day and remains cacheable by llama-server.
@@ -131,9 +122,6 @@ def resolve_whisper_dir(cwd_whisper: Path | None = None) -> Path:
     if (local / "whisper-server.exe").exists():
         return local
     return default_whisper_dir()
-
-
-RENDER_INTERVAL = 0.06
 
 
 class Config:
@@ -418,84 +406,46 @@ class LlamaTUI(App):
         self.transcript.scroll_end(animate=False)
         self.generate(turn, text)
 
-    # ---- streaming worker (adapter over TurnStream) ----------------------
+    # ---- streaming worker (adapter over TurnStream + TurnView) -----------
+    def _on_turn_status(self, phase: str, rate: float) -> None:
+        """TurnView fires this on each live render (throttled): refresh the status line and keep
+        the transcript pinned to the bottom. The StatusBar and transcript are App-global."""
+        self._status(f"{phase}…", detail=f"~{rate:.0f} tok/s", connected=True)
+        self.transcript.scroll_end(animate=False)
+
     @work(exclusive=True, group="gen")
     async def generate(self, turn: AssistantTurn, user_text: str) -> None:
         self._busy = True
         stream = TurnStream()
-        last_render = 0.0
-        collapsed = False
-        seen_calls: set[str] = set()
-
-        def reflect_tools() -> None:
-            for call in stream.state.tool_calls:
-                label = call.name + (f"  «{call.query}»" if call.query else "")
-                if call.call_id not in seen_calls:
-                    seen_calls.add(call.call_id)
-                    turn.add_tool_call(call.call_id, call.name)
-                if call.done:
-                    # Show the tool's actual result, so "done" can't hide a no-op or error.
-                    status = "failed" if call.failed else (_short_result(call.result) or "done")
-                    turn.update_tool(call.call_id, f"{label}  · {status}", done=True, failed=call.failed)
-                else:
-                    turn.update_tool(call.call_id, label)
-
-        def render(force: bool = False) -> None:
-            nonlocal last_render
-            now = time.monotonic()
-            if not force and now - last_render < RENDER_INTERVAL:
-                return
-            last_render = now
-            st = stream.state
-            if st.reasoning:
-                turn.set_reasoning(st.reasoning)
-            if st.answer:
-                turn.set_answer(strip_tool_noise(st.answer))
-            reflect_tools()
-            chars = len(st.answer) if st.answer else len(st.reasoning)
-            rate = (chars // 4) / max(1e-6, stream.elapsed() - (st.ttft_s or 0.0))
-            self._status(st.phase + "…", detail=f"~{rate:.0f} tok/s", connected=True)
-            self.transcript.scroll_end(animate=False)
+        view = TurnView(turn, on_status=self._on_turn_status)
 
         try:
             async for update in self.agent.run(self.conversation.messages_for_agent(), stream=True):
                 stream.ingest(update)
-                if not collapsed and stream.state.phase == WRITING:
-                    turn.collapse_thinking()
-                    collapsed = True
-                render()
+                view.reflect(stream.state)
         except Exception as exc:
-            render(force=True)
-            turn.set_metrics(f"⚠ {type(exc).__name__}: {exc}", classes="error")
+            view.reflect(stream.state, force=True)
+            view.error(exc)
             self._status("error", connected=False)
             self.conversation.undo_last_user()
             self._busy = False
             return
 
-        render(force=True)
+        view.reflect(stream.state, force=True)
         st = stream.state
-        elapsed = stream.elapsed()
-
-        if not st.has_reasoning:
-            turn.drop_thinking()
-        else:
-            rt = (st.usage_details or {}).get("reasoning_output_token_count")
-            turn.set_think_title(f"Thinking ({rt:,} tokens)" if rt else "Thinking")
-            turn.collapse_thinking()
-
         m = M.extract(
-            st.usage_details, st.timings, ttft_s=st.ttft_s, elapsed_s=elapsed,
+            st.usage_details, st.timings, ttft_s=st.ttft_s, elapsed_s=stream.elapsed(),
             answer_chars=len(st.answer), context_window=self.context_window,
         )
         metrics_line = M.format_oneline(m)
-        turn.set_metrics(metrics_line)
+        view.finalize(st, metrics_line)
 
         # persist the completed exchange (history + storage together)
         self.conversation.append_assistant(
             user_text=user_text,
             answer=strip_tool_noise(st.answer),
             reasoning=st.reasoning or None,
-            metrics={"line": metrics_line},
+            metrics=metrics_blob(metrics_line),
         )
         self._refresh_sidebar()
 
@@ -528,13 +478,9 @@ class LlamaTUI(App):
             else:
                 turn = AssistantTurn(show_thinking=self.settings.show_thinking)
                 await self.transcript.mount(turn)
-                line = None
-                if row["metrics"]:
-                    try:
-                        line = json.loads(row["metrics"]).get("line")
-                    except Exception:
-                        line = None
-                turn.load_saved(answer=row["content"], reasoning=row["reasoning"], metrics_line=line)
+                TurnView(turn).load_saved(
+                    answer=row["content"], reasoning=row["reasoning"], metrics=row["metrics"],
+                )
         self.transcript.scroll_end(animate=False)
         self._refresh_sidebar()
         self._status("ready", detail=f"“{self.conversation.title}”", connected=True)
