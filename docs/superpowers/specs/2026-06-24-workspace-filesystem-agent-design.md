@@ -39,8 +39,15 @@ the filesystem feature carries a guidance note like web/memory do.
 - **Tool shape: Hybrid.** Typed safe tools (read/list/search) auto-run inside the
   workspace; a gated shell-exec escape hatch (`run_command`) for everything else.
 - **Safety boundary: workspace-default, escapable.** A per-conversation workspace root;
-  reads/list/search inside it auto-run, ops outside it (and all mutations anywhere) require
-  approval. Containment-by-default with a friction-gated escape, not a hard jail.
+  reads/list/search are **confined to it and auto-run**, all mutations anywhere are
+  approval-gated, and `run_command` (also gated) is the escape hatch for anything outside.
+  Containment-by-default with a friction-gated escape, not a hard jail.
+  - **Why typed reads are confined, not auto-escalated:** the framework's approval gate is
+    **static per tool name** (`_try_execute_function_calls` builds its approval set from
+    `tool.approval_mode` before middleware runs), so a single `read_file` cannot be "auto
+    inside / approval outside." v1 confines typed reads (an outside path returns a clear
+    message); the model escapes via gated `run_command` or the user widens the workspace.
+    This also removes ungated outside reads entirely, shrinking the exfil surface (§F).
 - **Build vs. adopt: build our own `Workspace` deep module**, mirroring `memory.py`/`graph.py`,
   rather than adopting the framework's `FileAccessProvider` (§A).
 
@@ -104,16 +111,17 @@ a **thin surface** that presents it to the model (cf. `Memory` over `KnowledgeGr
 
 | Tool | Approval | Notes |
 |---|---|---|
-| `list_dir` | auto inside workspace | level/tree listing |
-| `read_file` | auto inside workspace | size-capped; binary → summary, not dump; untrusted-data framing (§F) |
-| `search` | auto inside workspace | **pure-Python** glob + content grep, result/match-capped (no ripgrep in v1) |
+| `list_dir` | auto; workspace-confined | level/tree listing; outside path → clear message |
+| `read_file` | auto; workspace-confined | size-capped; binary → summary, not dump; untrusted-data framing (§F); outside path → clear message |
+| `search` | auto; workspace-confined | **pure-Python** glob + content grep, result/match-capped (no ripgrep in v1) |
 | `write_file` | **always_require** | **full-file** create/overwrite (no partial-edit tool in v1); diff-on-overwrite preview |
 | `move` | **always_require** | rename/move |
 | `delete` | **always_require** | → OS recycle bin via **`send2trash`** (required dep), never hard delete |
 | `run_command` | **always_require** | shell exec; see §G |
 
-- Reads/list/search **outside** the workspace escalate to `always_require` (the "escapable"
-  part). Inside-workspace reads never prompt.
+- Reads/list/search are **confined** to the workspace: an outside (or symlink-escaping) path
+  returns a clear message rather than escalating to approval (see §B for why static approval
+  modes force this). Inside-workspace reads never prompt.
 - Gated tools use the framework's `FunctionTool(..., approval_mode="always_require")` — the
   same lever Exa uses with `"never_require"`.
 - **No approval-policy toggle.** One fixed, structural policy (reads-in-workspace auto;
@@ -187,10 +195,10 @@ The turn is driven by `async for update in self.agent.run(..., stream=True)` in
 - **Deny continues the run** (does not abort): the denied call returns `"User denied this
   action."` and the model can adapt/explain/wrap up. **Esc on the modal = Deny this one
   call** (not cancel-the-turn).
-- **"Approve all this turn"** covers only the **typed gated calls** (`write_file`/`move`/
-  `delete` + outside-workspace reads) for the **remainder of the current turn**, then
-  resets. **`run_command` is always excluded** — it always re-prompts. No
-  conversation/session-wide blanket.
+- **"Approve all this turn"** covers only the **typed gated mutations** (`write_file`/`move`/
+  `delete`) for the **remainder of the current turn**, then resets. **`run_command` is always
+  excluded** — it always re-prompts. No conversation/session-wide blanket. (Typed reads are
+  confined, not gated, so there are no outside-read approvals to blanket.)
 - `TurnState`/`turn_view` gain an **"awaiting approval"** phase reflected in the status bar.
 
 **`generate()` becomes a run→pause→resume loop:**
