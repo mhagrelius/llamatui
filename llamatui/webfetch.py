@@ -60,6 +60,7 @@ class HttpResponse:
 
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_ENVELOPE_TAG_RE = re.compile(r"<(/?)fetched_url", re.IGNORECASE)
 _HTML_TYPES = ("text/html", "application/xhtml+xml")
 _JS_MARKERS = ('id="root"', "id='root'", "__NEXT_DATA__", 'id="app"', "id='__next'", 'id="__next"')
 
@@ -153,8 +154,16 @@ class WebFetcher:
 
     @staticmethod
     def _envelope(url: str, title: str | None, body: str) -> str:
-        title_attr = f' title="{title}"' if title else ""
-        return f'<fetched_url url="{url}"{title_attr}>\n{body}\n</fetched_url>'
+        # title goes in an HTML-ish attribute: drop chars that could break out of it.
+        safe_title = None
+        if title:
+            safe_title = title.replace('"', "").replace("<", "").replace(">", "")
+            safe_title = safe_title or None
+        title_attr = f' title="{safe_title}"' if safe_title else ""
+        # Page content must not be able to forge or close the untrusted-data boundary:
+        # neutralize any literal <fetched_url / </fetched_url it contains.
+        safe_body = _ENVELOPE_TAG_RE.sub(lambda m: f"<{m.group(1)}fetched-url", body)
+        return f'<fetched_url url="{url}"{title_attr}>\n{safe_body}\n</fetched_url>'
 
 
 def _safe_url(url: str) -> str | None:
