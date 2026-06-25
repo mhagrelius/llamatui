@@ -10,6 +10,7 @@ tool surface (build_tools/FILESYSTEM_GUIDANCE) only phrases it for the model.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -148,6 +149,11 @@ class Workspace:
                 description="Create or overwrite a file in the workspace (full contents).",
                 approval_mode="always_require",
             ),
+            FunctionTool(
+                func=self.move, name="move",
+                description="Move (rename) or relocate a file or directory within the workspace.",
+                approval_mode="always_require",
+            ),
         ]
 
     # ---- mutation tool --------------------------------------------------
@@ -163,3 +169,18 @@ class Workspace:
         target.write_text(content, encoding="utf-8")
         rel = target.relative_to(self.root)
         return f"Wrote {rel} ({len(content)} chars)."
+
+    def move(
+        self,
+        src: Annotated[str, "Workspace-relative source path."],
+        dst: Annotated[str, "Workspace-relative destination path."],
+    ) -> str:
+        s = self._confined(src)
+        d = self._confined(dst)
+        if s is None or d is None:
+            return OUTSIDE_MSG(self.root)
+        if not s.exists():
+            return f"Not found: {src}"
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(s), str(d))
+        return f"Moved {s.relative_to(self.root).as_posix()} → {d.relative_to(self.root).as_posix()}."

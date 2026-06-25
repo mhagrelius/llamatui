@@ -104,3 +104,11 @@ def test_search_stops_at_max_matches(tmp_path):
     # Count actual match lines (excluding the marker line)
     match_lines = [line for line in out.split("\n") if "matches.txt" in line]
     assert len(match_lines) == MAX_MATCHES
+
+
+def test_move_renames_inside_and_confines(tmp_path):
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    msg = _ws(tmp_path).move("a.txt", "b.txt")
+    assert not (tmp_path / "a.txt").exists() and (tmp_path / "b.txt").read_text(encoding="utf-8") == "x"
+    assert "b.txt" in msg.replace("\\", "/")
+    assert "outside your workspace" in _ws(tmp_path).move("b.txt", "../escaped.txt")
