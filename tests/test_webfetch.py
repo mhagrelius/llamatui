@@ -98,3 +98,10 @@ async def test_fetch_stops_after_max_redirects():
     client = FakeClient([_redirect(f"https://ex.com/{i}") for i in range(2, 9)])
     out = await WebFetcher(client=client, extractor=fake_extractor("x")).fetch("https://ex.com/1")
     assert "too many redirects" in out.lower()
+
+
+async def test_redirect_without_location_reports_distinctly():
+    client = FakeClient([HttpResponse(302, {}, "https://ex.com/1", b"")])
+    out = await WebFetcher(client=client, extractor=fake_extractor("x")).fetch("https://ex.com/1")
+    assert "location header" in out.lower()
+    assert "too many redirects" not in out.lower()

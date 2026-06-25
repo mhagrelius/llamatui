@@ -64,7 +64,7 @@ class WebFetcher:
             if resp.status_code in (301, 302, 303, 307, 308):
                 location = resp.headers.get("location")
                 if not location:
-                    break
+                    return "Fetch failed: redirect with no Location header."
                 err = _safe_url(location)
                 if err is not None:
                     return err
