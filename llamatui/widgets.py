@@ -9,6 +9,8 @@ from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import Collapsible, Markdown, Static, TextArea
 
+_CMD_OUTPUT_TAIL_CAP = 200   # max visible lines in the streaming command-output region
+
 
 _OPENERS = set("([{\"'`")
 
@@ -151,6 +153,31 @@ class AssistantTurn(Vertical):
         widget.update(Text(line, style="dim"))
         if classes:
             widget.set_classes(f"turn-metrics {classes}")
+
+    # ---- live command output --------------------------------------------
+    def append_command_output(self, text: str) -> None:
+        """Append a streamed output chunk to the tail region under the latest tool chip.
+
+        Called directly on the event loop (the runner streams from within the awaited
+        run_command, so no call_from_thread is needed). Creates the tail Static on first
+        call and caps the visible content to _CMD_OUTPUT_TAIL_CAP lines.
+        """
+        tools = self.query_one("#tools", Vertical)
+        # Locate or create the tail region (a single Static tagged "cmd-output-tail").
+        tail_widgets = tools.query(".cmd-output-tail")
+        if tail_widgets:
+            tail = tail_widgets.last(Static)
+        else:
+            tail = Static("", classes="cmd-output-tail")
+            tools.mount(tail)
+
+        current = tail.renderable
+        current_text: str = current.plain if isinstance(current, Text) else str(current)
+        combined = current_text + text
+        lines = combined.splitlines(keepends=True)
+        if len(lines) > _CMD_OUTPUT_TAIL_CAP:
+            lines = lines[-_CMD_OUTPUT_TAIL_CAP:]
+        tail.update(Text("".join(lines), no_wrap=True))
 
 
 def render_status(*, model: str, state: str, detail: str, connected: bool, voice: str) -> Text:

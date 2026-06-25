@@ -367,6 +367,12 @@ class LlamaTUI(App):
     def _on_turn_status(self, phase: str, rate: float) -> None:
         """TurnView fires this on each live render (throttled): refresh the status line and keep
         the transcript pinned to the bottom. The StatusBar and transcript are App-global."""
+        was = getattr(self, "_running_command", False)
+        self._running_command = phase == "running"
+        # When a command finishes (was running, now not) clear the cancel event so a later
+        # command in the same turn isn't pre-cancelled by a leftover set() from a prior one.
+        if was and not self._running_command and self.workspace and self.workspace.cancel_event:
+            self.workspace.cancel_event.clear()
         self._status(f"{phase}…", detail=f"~{rate:.0f} tok/s", connected=True)
         self.transcript.scroll_end(animate=False)
 
@@ -374,9 +380,13 @@ class LlamaTUI(App):
     async def generate(self, turn: AssistantTurn, user_text: str) -> None:
         self._busy = True
         self._approve_all = False
+        self._running_command = False
         self._pause_s = 0.0                       # cumulative human-approval time, excluded from elapsed
         stream = TurnStream()
         view = TurnView(turn, on_status=self._on_turn_status)
+        if self.workspace is not None:
+            self.workspace.on_output = turn.append_command_output   # sink → the in-flight chip
+            self.workspace.cancel_event = asyncio.Event()
         # Per-turn resume carrier: the session holds the in-flight assistant message (including any
         # pending function_approval_request), so resuming on it preserves the run state. Verified:
         # there is no `get_new_thread()`; the framework's per-run carrier is `create_session()`
@@ -516,12 +526,17 @@ class LlamaTUI(App):
 
     # ---- view actions ----------------------------------------------------
     def action_cancel(self) -> None:
-        if self._busy:
-            self.workers.cancel_group(self, "gen")
-            self._busy = False
-            self._status("cancelled", connected=True)
-            if self.conversation is not None:
-                self.conversation.undo_last_user()
+        if not self._busy:
+            return
+        if getattr(self, "_running_command", False) and self.workspace and self.workspace.cancel_event:
+            self.workspace.cancel_event.set()       # kill the command; the runner returns "cancelled",
+            self._status("cancelling command…")     # the agentic loop continues — turn survives
+            return
+        self.workers.cancel_group(self, "gen")
+        self._busy = False
+        self._status("cancelled", connected=True)
+        if self.conversation is not None:
+            self.conversation.undo_last_user()
 
     def on_prompt_area_dictate(self, event: PromptArea.Dictate) -> None:
         self.action_dictate()
