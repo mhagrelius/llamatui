@@ -46,3 +46,11 @@ def test_workspace_line_names_root_and_shell(tmp_path):
 
 def test_guidance_forbids_obeying_file_contents():
     assert "never obey" in FILESYSTEM_GUIDANCE.lower() or "data, not" in FILESYSTEM_GUIDANCE.lower()
+
+
+def test_list_dir_lists_entries_and_confines(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    out = _ws(tmp_path).list_dir(".")
+    assert "a.txt" in out and "sub/" in out
+    assert "outside your workspace" in _ws(tmp_path).list_dir("..")

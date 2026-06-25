@@ -60,11 +60,24 @@ class Workspace:
         return None
 
     # ---- tool surface ---------------------------------------------------
+    def list_dir(self, path: Annotated[str, "Workspace-relative directory."] = ".") -> str:
+        target = self._confined(path)
+        if target is None:
+            return OUTSIDE_MSG(self.root)
+        if not target.is_dir():
+            return f"Not a directory: {path}"
+        entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        if not entries:
+            return "(empty)"
+        return "\n".join(e.name + ("/" if e.is_dir() else "") for e in entries)
+
     def workspace_line(self) -> str:
         return f"Workspace: {self.root} · shell: {self._shell or _default_shell_name()}"
 
     def build_tools(self) -> list[FunctionTool]:
         return [
+            FunctionTool(func=self.list_dir, name="list_dir",
+                         description="List entries in a workspace directory."),
             FunctionTool(
                 func=self.write_file, name="write_file",
                 description="Create or overwrite a file in the workspace (full contents).",
