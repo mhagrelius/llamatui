@@ -28,6 +28,19 @@ def test_render_status_omits_empty_voice():
     assert "🎙" not in t.plain
 
 
+def test_render_status_includes_workspace_path():
+    t = render_status(
+        model="qwen", state="ready", detail="", connected=True, voice="",
+        workspace="C:/Users/Matthew",
+    )
+    assert "C:/Users/Matthew" in t.plain
+
+
+def test_render_status_omits_empty_workspace():
+    t = render_status(model="qwen", state="ready", detail="ctx 3%", connected=True, voice="")
+    assert "C:" not in t.plain  # no workspace segment renders when none is provided
+
+
 # ---- append_command_output tail-capping (no Textual App needed) ------------------
 # Tests call the REAL AssistantTurn.append_command_output end-to-end.
 # We stub only what needs a running App: query_one returns a fake tools container

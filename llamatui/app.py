@@ -283,16 +283,26 @@ class LlamaTUI(App):
         """Rebuild self.workspace from the resolved root, or set to None when fs is disabled."""
         if not self.config.fs:
             self.workspace = None
-            return
-        from .filesystem import Workspace
-        self.workspace = Workspace(self._resolve_workspace())
-        # PIN the resolved root onto the conversation the first time we know it.
-        # Precedence (conv > settings > config > cwd) means once pinned the root is stable
-        # regardless of later Settings.default_workspace changes.
-        if self.conversation is not None and not self.conversation.workspace:
-            self.conversation.workspace = str(self.workspace.root)
-            if self.conversation.id is not None:
-                self.store.set_workspace(self.conversation.id, self.conversation.workspace)
+        else:
+            from .filesystem import Workspace
+            self.workspace = Workspace(self._resolve_workspace())
+            # PIN the resolved root onto the conversation the first time we know it.
+            # Precedence (conv > settings > config > cwd) means once pinned the root is stable
+            # regardless of later Settings.default_workspace changes.
+            if self.conversation is not None and not self.conversation.workspace:
+                self.conversation.workspace = str(self.workspace.root)
+                if self.conversation.id is not None:
+                    self.store.set_workspace(self.conversation.id, self.conversation.workspace)
+        self._show_workspace()
+
+    def _show_workspace(self) -> None:
+        """Reflect the active workspace root in the status bar (per-conversation). Empty when
+        fs is disabled. Guarded so an early rebuild before the status bar mounts is harmless."""
+        label = str(self.workspace.root) if self.workspace is not None else ""
+        try:
+            self.query_one("#status", StatusBar).show(workspace=label)
+        except Exception:
+            pass
 
     def _rebuild_agent(self) -> None:
         """Conversation boundary: recompute the semi-volatile prompt + tools, rebuild the agent.

@@ -183,7 +183,9 @@ class AssistantTurn(Vertical):
         self._cmd_tail.update(Text("".join(self._cmd_output_lines), no_wrap=True))
 
 
-def render_status(*, model: str, state: str, detail: str, connected: bool, voice: str) -> Text:
+def render_status(
+    *, model: str, state: str, detail: str, connected: bool, voice: str, workspace: str = ""
+) -> Text:
     dot = "●" if connected else "○"
     text = Text()
     text.append(f" {dot} ", style="green" if connected else "red")
@@ -193,6 +195,9 @@ def render_status(*, model: str, state: str, detail: str, connected: bool, voice
     if detail:
         text.append("   ")
         text.append(detail, style="dim")
+    if workspace:
+        text.append("   ")
+        text.append(workspace, style="blue")
     if voice:
         text.append("   ")
         text.append(voice, style="magenta")
@@ -210,8 +215,10 @@ class StatusBar(Static):
         self._detail = ""
         self._connected = True
         self._voice = ""
+        self._workspace = ""
 
-    def show(self, *, model=None, state=None, detail=None, connected=None, voice=None) -> None:
+    def show(self, *, model=None, state=None, detail=None, connected=None, voice=None,
+             workspace=None) -> None:
         if model is not None:
             self._model = model
         if state is not None:
@@ -222,7 +229,9 @@ class StatusBar(Static):
             self._connected = connected
         if voice is not None:
             self._voice = voice
+        if workspace is not None:
+            self._workspace = workspace
         self.update(render_status(
             model=self._model, state=self._state, detail=self._detail,
-            connected=self._connected, voice=self._voice,
+            connected=self._connected, voice=self._voice, workspace=self._workspace,
         ))
