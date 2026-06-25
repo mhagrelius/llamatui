@@ -39,6 +39,7 @@ class HttpResponse:
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _HTML_TYPES = ("text/html", "application/xhtml+xml")
+_JS_MARKERS = ('id="root"', "id='root'", "__NEXT_DATA__", 'id="app"', "id='__next'", 'id="__next"')
 
 
 def _extract_title(html: str) -> str | None:
@@ -47,6 +48,13 @@ def _extract_title(html: str) -> str | None:
         return None
     title = re.sub(r"\s+", " ", m.group(1)).strip()
     return title or None
+
+
+def _looks_js_rendered(html: str) -> bool:
+    lower = html.lower()
+    has_script = "<script" in lower
+    has_shell_root = any(m.lower() in lower for m in _JS_MARKERS)
+    return has_script and has_shell_root
 
 
 class WebFetcher:
@@ -74,12 +82,33 @@ class WebFetcher:
         return "Fetch failed: too many redirects."
 
     async def _render(self, resp: "HttpResponse") -> str:
-        html = resp.body.decode("utf-8", errors="replace")
-        markdown = await asyncio.to_thread(self._extractor, html, resp.url)
-        markdown = (markdown or "")[:CONTENT_CAP]
-        title = _extract_title(html)
+        if not (200 <= resp.status_code < 300):
+            return f"Fetch failed: HTTP {resp.status_code} for {resp.url}"
+        ctype = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        text = resp.body.decode("utf-8", errors="replace")
+        trunc = "\n[truncated: response exceeded the size cap]" if resp.truncated else ""
+
+        if ctype == "text/plain":
+            body = text[:CONTENT_CAP]
+            return self._envelope(resp.url, None, body + trunc)
+
+        if ctype and ctype not in _HTML_TYPES:
+            return f"Unsupported content type: {ctype} ({resp.url})"
+
+        # html (or missing content-type → best-effort html)
+        markdown = await asyncio.to_thread(self._extractor, text, resp.url)
+        if not markdown:
+            if _looks_js_rendered(text):
+                return ("This page appears to be client-rendered (JavaScript); its content "
+                        f"isn't in the initial HTML: {resp.url}")
+            return f"Couldn't extract readable content from {resp.url}"
+        title = _extract_title(text)
+        return self._envelope(resp.url, title, markdown[:CONTENT_CAP] + trunc)
+
+    @staticmethod
+    def _envelope(url: str, title: str | None, body: str) -> str:
         title_attr = f' title="{title}"' if title else ""
-        return f'<fetched_url url="{resp.url}"{title_attr}>\n{markdown}\n</fetched_url>'
+        return f'<fetched_url url="{url}"{title_attr}>\n{body}\n</fetched_url>'
 
 
 def _safe_url(url: str) -> str | None:

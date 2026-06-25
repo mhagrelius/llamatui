@@ -105,3 +105,51 @@ async def test_redirect_without_location_reports_distinctly():
     out = await WebFetcher(client=client, extractor=fake_extractor("x")).fetch("https://ex.com/1")
     assert "location header" in out.lower()
     assert "too many redirects" not in out.lower()
+
+
+# Task 4 tests
+async def _fetch_one(resp, extractor=fake_extractor("md")):
+    return await WebFetcher(client=FakeClient([resp]), extractor=extractor).fetch("https://ex.com")
+
+
+async def test_non_2xx_reports_status():
+    out = await _fetch_one(HttpResponse(403, {"content-type": "text/html"}, "https://ex.com", b""))
+    assert "403" in out and "fetch failed" in out.lower()
+
+
+async def test_unsupported_content_type_refused():
+    out = await _fetch_one(HttpResponse(200, {"content-type": "application/pdf"}, "https://ex.com", b"%PDF"))
+    assert "unsupported content type" in out.lower() and "application/pdf" in out
+
+
+async def test_missing_content_type_attempts_html():
+    out = await _fetch_one(HttpResponse(200, {}, "https://ex.com", b"<html><body>hi</body></html>"))
+    assert "<fetched_url" in out   # treated as html, extractor ran
+
+
+async def test_text_plain_passthrough():
+    resp = HttpResponse(200, {"content-type": "text/plain"}, "https://ex.com", b"raw notes")
+    out = await _fetch_one(resp, extractor=fake_extractor(None))  # extractor not used for plain
+    assert "raw notes" in out
+
+
+async def test_empty_extraction_message():
+    resp = HttpResponse(200, {"content-type": "text/html"}, "https://ex.com",
+                        b"<html><body><p>some real article text here</p></body></html>")
+    out = await _fetch_one(resp, extractor=fake_extractor(None))
+    assert "couldn't extract" in out.lower()
+
+
+async def test_js_shell_message():
+    shell = b'<html><body><div id="root"></div><script src="/app.js"></script></body></html>'
+    resp = HttpResponse(200, {"content-type": "text/html"}, "https://ex.com", shell)
+    out = await _fetch_one(resp, extractor=fake_extractor(None))
+    assert "client-rendered" in out.lower() or "javascript" in out.lower()
+
+
+async def test_truncated_body_notes_it():
+    html = "<html><title>T</title><body>x</body></html>"
+    resp = HttpResponse(200, {"content-type": "text/html"}, "https://ex.com",
+                        html.encode("utf-8"), truncated=True)
+    out = await _fetch_one(resp, extractor=fake_extractor("content"))
+    assert "truncated" in out.lower()
