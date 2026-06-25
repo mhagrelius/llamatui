@@ -28,12 +28,21 @@ def test_render_status_omits_empty_voice():
     assert "🎙" not in t.plain
 
 
-def test_render_status_includes_workspace_path():
+def test_render_status_right_aligns_workspace_to_width():
     t = render_status(
         model="qwen", state="ready", detail="", connected=True, voice="",
-        workspace="C:/Users/Matthew",
+        workspace="C:/Users/Matthew", width=60,
     )
-    assert "C:/Users/Matthew" in t.plain
+    assert t.plain.endswith("C:/Users/Matthew")       # pinned to the trailing edge
+    assert t.cell_len == 60                            # padded out to the full bar width
+
+
+def test_render_status_workspace_inline_without_width():
+    t = render_status(
+        model="qwen", state="ready", detail="", connected=True, voice="",
+        workspace="C:/ws",
+    )
+    assert t.plain.endswith("   C:/ws")               # inline gap fallback before layout
 
 
 def test_render_status_omits_empty_workspace():

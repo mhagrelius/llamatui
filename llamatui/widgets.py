@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rich.cells import cell_len
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
@@ -184,7 +185,8 @@ class AssistantTurn(Vertical):
 
 
 def render_status(
-    *, model: str, state: str, detail: str, connected: bool, voice: str, workspace: str = ""
+    *, model: str, state: str, detail: str, connected: bool, voice: str,
+    workspace: str = "", width: int | None = None,
 ) -> Text:
     dot = "●" if connected else "○"
     text = Text()
@@ -195,12 +197,18 @@ def render_status(
     if detail:
         text.append("   ")
         text.append(detail, style="dim")
-    if workspace:
-        text.append("   ")
-        text.append(workspace, style="blue")
     if voice:
         text.append("   ")
         text.append(voice, style="magenta")
+    if workspace:
+        # Right-align the workspace path to the bar's trailing edge when the width is known
+        # (the bar passes its measured width); fall back to an inline gap before layout.
+        if width is None:
+            text.append("   ")
+        else:
+            pad = width - cell_len(text.plain) - cell_len(workspace)
+            text.append(" " * max(1, pad))
+        text.append(workspace, style="blue")
     return text
 
 
@@ -231,7 +239,13 @@ class StatusBar(Static):
             self._voice = voice
         if workspace is not None:
             self._workspace = workspace
+        width = self.size.width or None   # None before first layout → inline fallback
         self.update(render_status(
             model=self._model, state=self._state, detail=self._detail,
             connected=self._connected, voice=self._voice, workspace=self._workspace,
+            width=width,
         ))
+
+    def on_resize(self, event) -> None:
+        # Re-render so the right-aligned workspace segment re-pins to the new trailing edge.
+        self.show()
