@@ -58,9 +58,22 @@ class WebFetcher:
         err = _safe_url(url)
         if err is not None:
             return err
-        resp = await self._client.fetch_once(url, headers={"User-Agent": USER_AGENT},
-                                             max_bytes=MAX_BYTES)
-        ctype = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        headers = {"User-Agent": USER_AGENT}
+        for _ in range(MAX_REDIRECTS + 1):
+            resp = await self._client.fetch_once(url, headers=headers, max_bytes=MAX_BYTES)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("location")
+                if not location:
+                    break
+                err = _safe_url(location)
+                if err is not None:
+                    return err
+                url = location
+                continue
+            return await self._render(resp)
+        return "Fetch failed: too many redirects."
+
+    async def _render(self, resp: "HttpResponse") -> str:
         html = resp.body.decode("utf-8", errors="replace")
         markdown = await asyncio.to_thread(self._extractor, html, resp.url)
         markdown = (markdown or "")[:CONTENT_CAP]

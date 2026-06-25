@@ -70,3 +70,31 @@ async def test_fetch_rejects_unsafe_url_without_calling_client():
     out = await WebFetcher(client=client, extractor=fake_extractor("x")).fetch("file:///etc/passwd")
     assert "http" in out.lower()
     assert client.requests == []   # never left the machine
+
+
+def _redirect(location: str, status: int = 302):
+    return HttpResponse(status, {"location": location}, "", b"")
+
+
+async def test_fetch_follows_redirects_to_final_url():
+    html = "<html><title>End</title><body>x</body></html>"
+    client = FakeClient([
+        _redirect("https://ex.com/2"),
+        _html_resp(html, url="https://ex.com/2"),
+    ])
+    out = await WebFetcher(client=client, extractor=fake_extractor("done")).fetch("https://ex.com/1")
+    assert 'url="https://ex.com/2"' in out
+    assert client.requests == ["https://ex.com/1", "https://ex.com/2"]
+
+
+async def test_fetch_rejects_redirect_to_unsafe_scheme():
+    client = FakeClient([_redirect("file:///etc/passwd")])
+    out = await WebFetcher(client=client, extractor=fake_extractor("x")).fetch("https://ex.com/1")
+    assert "http" in out.lower()
+
+
+async def test_fetch_stops_after_max_redirects():
+    # 6 hops of redirect → exceeds MAX_REDIRECTS (5).
+    client = FakeClient([_redirect(f"https://ex.com/{i}") for i in range(2, 9)])
+    out = await WebFetcher(client=client, extractor=fake_extractor("x")).fetch("https://ex.com/1")
+    assert "too many redirects" in out.lower()
