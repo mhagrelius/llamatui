@@ -65,3 +65,13 @@ def test_resolve_workspace_empty_string_treated_as_absent(tmp_path):
     """Empty strings are falsy and should not win over a later non-empty value."""
     cwd = str(tmp_path / "cwd")
     assert resolve_workspace("", "", "", cwd) == cwd
+
+
+def test_pinned_conversation_workspace_beats_changed_settings_default(tmp_path):
+    """After a workspace is pinned to a conversation (Fix 1), changing Settings.default_workspace
+    must NOT silently re-point an existing chat.  Verify at the resolve_workspace level."""
+    workspace_a = str(tmp_path / "project-a")  # the pinned conversation root
+    workspace_b = str(tmp_path / "settings-b")  # a later settings change
+    cwd = str(tmp_path / "cwd")
+    # When conv_workspace is already set, it must win regardless of settings or config.
+    assert resolve_workspace(workspace_a, workspace_b, None, cwd) == workspace_a

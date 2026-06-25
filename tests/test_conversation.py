@@ -93,3 +93,38 @@ def test_workspace_column_roundtrips(tmp_path):
     assert s.get_conversation(cid)["workspace"] == str(tmp_path)
     s.set_workspace(cid, str(tmp_path / "sub"))
     assert s.get_conversation(cid)["workspace"] == str(tmp_path / "sub")
+
+
+def test_workspace_persists_through_reload_despite_changed_settings(tmp_path):
+    """A conversation persisted with workspace='A' must reload with workspace='A'
+    even if the caller would now supply a different settings default 'B'.
+
+    This proves the per-conversation workspace pin is stable end-to-end.
+    """
+    store = _store(tmp_path)
+    conv = Conversation(store, model="local")
+    workspace_a = str(tmp_path / "project-a")
+
+    # First turn: save the conversation with workspace pinned to A.
+    conv.append_user("hello")
+    conv.workspace = workspace_a
+    conv.append_assistant(user_text="hello", answer="hi", reasoning=None, metrics=None)
+    assert conv.is_saved
+    cid = conv.id
+
+    # Persist the pinned workspace via set_workspace (mirrors what _rebuild_workspace does).
+    store.set_workspace(cid, workspace_a)
+
+    # Reload: the workspace must survive even though the "current settings default" would be B.
+    reloaded = Conversation(store)
+    reloaded.load(cid)
+    assert reloaded.workspace == workspace_a
+
+    # The resolve_workspace helper must confirm that the pinned conversation root beats 'B'.
+    from llamatui.app import resolve_workspace
+    workspace_b = str(tmp_path / "settings-b")
+    resolved = resolve_workspace(reloaded.workspace, workspace_b, None, str(tmp_path / "cwd"))
+    assert resolved == workspace_a, (
+        f"Expected pinned workspace {workspace_a!r} to beat settings default {workspace_b!r}; "
+        f"got {resolved!r}"
+    )

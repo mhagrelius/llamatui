@@ -285,6 +285,13 @@ class LlamaTUI(App):
             return
         from .filesystem import Workspace
         self.workspace = Workspace(self._resolve_workspace())
+        # PIN the resolved root onto the conversation the first time we know it.
+        # Precedence (conv > settings > config > cwd) means once pinned the root is stable
+        # regardless of later Settings.default_workspace changes.
+        if self.conversation is not None and not self.conversation.workspace:
+            self.conversation.workspace = str(self.workspace.root)
+            if self.conversation.id is not None:
+                self.store.set_workspace(self.conversation.id, self.conversation.workspace)
 
     def _rebuild_agent(self) -> None:
         """Conversation boundary: recompute the semi-volatile prompt + tools, rebuild the agent.

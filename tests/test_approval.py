@@ -8,16 +8,16 @@ relies on (built against real agent_framework Content so the spike's API contrac
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from agent_framework import Content
 
-from llamatui.approval import _describe
+from llamatui.approval import ApprovalModal, _describe
 
 
 def _call(name, **args):
     """A stand-in function_call content: _describe only reads .name and .arguments."""
-    import json
     return SimpleNamespace(name=name, arguments=json.dumps(args))
 
 
@@ -71,3 +71,37 @@ def test_to_function_approval_response_carries_decision():
     assert approved.id == "r1"
     assert denied.approved is False
     assert denied.id == "r1"
+
+
+# ---- _render_call for run_command shows cwd + shell (spec §H) -------------
+
+class _FakeWorkspace:
+    """Minimal workspace stub: workspace_line() returns a predictable string."""
+    def __init__(self, root, shell="sh"):
+        self.root = root
+        self._shell_name = shell
+
+    def workspace_line(self):
+        return f"Workspace: {self.root} · shell: {self._shell_name}"
+
+
+def test_render_call_run_command_shows_cwd_and_shell(tmp_path):
+    """_render_call for run_command must include the workspace root and shell."""
+    ws = _FakeWorkspace(root=str(tmp_path), shell="PowerShell")
+    modal = ApprovalModal.__new__(ApprovalModal)
+    modal._workspace = ws
+    call = _call("run_command", command="pytest -q")
+    rendered = modal._render_call(call)
+    assert str(tmp_path) in rendered
+    assert "PowerShell" in rendered
+    assert "pytest -q" in rendered
+
+
+def test_render_call_run_command_no_workspace_falls_back():
+    """_render_call for run_command without workspace falls back gracefully."""
+    modal = ApprovalModal.__new__(ApprovalModal)
+    modal._workspace = None
+    call = _call("run_command", command="ls -la")
+    rendered = modal._render_call(call)
+    assert "run_command" in rendered
+    assert "ls -la" in rendered

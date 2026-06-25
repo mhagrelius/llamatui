@@ -46,6 +46,8 @@ class ApprovalModal(ModalScreen[dict]):
 
         For write_file, show a diff/preview via workspace.preview_write if a workspace
         is available; otherwise fall back to the one-liner _describe.
+        For run_command, include the workspace cwd and shell so the user can make an
+        informed decision (run_command is uncontained-by-design; cwd matters).
         """
         name = getattr(call, "name", "?")
         if name == "write_file" and self._workspace is not None:
@@ -57,6 +59,17 @@ class ApprovalModal(ModalScreen[dict]):
             path = parsed.get("path", "")
             content = parsed.get("content", "")
             return self._workspace.preview_write(path, content)
+        if name == "run_command":
+            args = getattr(call, "arguments", "") or ""
+            try:
+                parsed = json.loads(args) if isinstance(args, str) else dict(args)
+            except Exception:
+                parsed = {}
+            command = parsed.get("command", "")
+            if self._workspace is not None:
+                ws_line = self._workspace.workspace_line()
+                return f"run_command ({ws_line})\n{command}"
+            return f"run_command: {command}"
         return _describe(call)
 
     def compose(self) -> ComposeResult:

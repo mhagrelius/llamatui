@@ -176,7 +176,8 @@ class AssistantTurn(Vertical):
         lines = self._cmd_output_buf.splitlines(keepends=True)
         if len(lines) > _CMD_OUTPUT_TAIL_CAP:
             lines = lines[-_CMD_OUTPUT_TAIL_CAP:]
-        tail.update(Text("".join(lines), no_wrap=True))
+        self._cmd_output_buf = "".join(lines)
+        tail.update(Text(self._cmd_output_buf, no_wrap=True))
 
 
 def render_status(*, model: str, state: str, detail: str, connected: bool, voice: str) -> Text:
