@@ -29,6 +29,7 @@ def cli_overrides(args) -> dict:
         "top_p": args.top_p,
         "max_tokens": args.max_tokens,
         "voice_mode": args.voice_mode,
+        "default_workspace": args.workspace,
     }
 
 
@@ -59,6 +60,10 @@ def main() -> None:
     ap.add_argument("--whisper-url", default=None, help="use an already-running whisper-server at this URL instead of spawning one")
     ap.add_argument("--setup-voice", action="store_true",
                     help="download whisper-server + model into the user-data dir, then exit")
+    ap.add_argument("--workspace", default=None,
+                    help="default workspace root for new chats (default: cwd)")
+    ap.add_argument("--no-fs", action="store_true",
+                    help="disable the filesystem tools")
     args = ap.parse_args()
 
     if args.setup_voice:
@@ -84,6 +89,8 @@ def main() -> None:
         whisper_bin=args.whisper_bin,
         whisper_model=args.whisper_model,
         whisper_url=args.whisper_url,
+        fs=not args.no_fs,
+        workspace=args.workspace,
     )
     LlamaTUI(config, cli_overrides=cli_overrides(args)).run()
 

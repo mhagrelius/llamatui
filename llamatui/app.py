@@ -68,10 +68,25 @@ def resolve_whisper_dir(cwd_whisper: Path | None = None) -> Path:
     return default_whisper_dir()
 
 
+def resolve_workspace(
+    conv_workspace: str | None,
+    settings_default: str | None,
+    config_workspace: str | None,
+    cwd: str,
+) -> str:
+    """Pure precedence helper: conversation > settings default > config/CLI > cwd.
+
+    Each source is treated as absent when falsy (None or empty string).
+    Extracted so it can be unit-tested without constructing App.
+    """
+    return conv_workspace or settings_default or config_workspace or cwd
+
+
 class Config:
     def __init__(
         self, url, model, system, db_path=None, web=True, memory=True,
         voice=True, whisper_bin=None, whisper_model=None, whisper_url=None,
+        fs=True, workspace=None,
     ):
         self.url = url
         self.model = model
@@ -83,6 +98,8 @@ class Config:
         self.whisper_bin = whisper_bin
         self.whisper_model = whisper_model
         self.whisper_url = whisper_url
+        self.fs = fs
+        self.workspace = workspace
 
 
 class LlamaTUI(App):
@@ -190,12 +207,6 @@ class LlamaTUI(App):
                 )
                 self.voice_enabled = True
 
-        # Temporary spike wiring: default the workspace to the cwd so the approval loop runs.
-        # Task 11 replaces this with a per-conversation, user-chosen workspace.
-        from .filesystem import Workspace
-        if getattr(self.config, "fs", True):
-            self.workspace = Workspace(Path.cwd())
-
         self._builder = AgentBuilder(
             self.config.url, self.config.model,
             web_tool=self.web_tool if self.web_enabled else None,
@@ -257,9 +268,28 @@ class LlamaTUI(App):
         if self.memory is not None:
             self.memory.attach_embedder(embedder)
 
+    def _resolve_workspace(self) -> str:
+        """Precedence: conversation.workspace > settings.default_workspace > config.workspace > cwd."""
+        conv = self.conversation.workspace if self.conversation else None
+        return resolve_workspace(
+            conv,
+            self.settings.default_workspace,
+            self.config.workspace,
+            str(Path.cwd()),
+        )
+
+    def _rebuild_workspace(self) -> None:
+        """Rebuild self.workspace from the resolved root, or set to None when fs is disabled."""
+        if not self.config.fs:
+            self.workspace = None
+            return
+        from .filesystem import Workspace
+        self.workspace = Workspace(self._resolve_workspace())
+
     def _rebuild_agent(self) -> None:
         """Conversation boundary: recompute the semi-volatile prompt + tools, rebuild the agent.
         Delegates the assembly + cache-prefix discipline to AgentBuilder."""
+        self._rebuild_workspace()
         self.agent = self._builder.rebuild(
             persona=self.conversation.system_prompt, volatile=_date_line(),
             settings=self.settings, workspace=self.workspace,

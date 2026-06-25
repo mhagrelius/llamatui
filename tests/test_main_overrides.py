@@ -7,7 +7,8 @@ from llamatui.__main__ import cli_overrides
 
 
 def _args(**over):
-    base = dict(thinking_budget=None, temp=None, top_p=None, max_tokens=None, voice_mode=None)
+    base = dict(thinking_budget=None, temp=None, top_p=None, max_tokens=None, voice_mode=None,
+                workspace=None)
     base.update(over)
     return Namespace(**base)
 
@@ -15,7 +16,7 @@ def _args(**over):
 def test_unset_flags_map_to_none():
     assert cli_overrides(_args()) == {
         "thinking_budget": None, "temperature": None, "top_p": None,
-        "max_tokens": None, "voice_mode": None,
+        "max_tokens": None, "voice_mode": None, "default_workspace": None,
     }
 
 
