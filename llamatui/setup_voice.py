@@ -24,6 +24,10 @@ WHISPER_RELEASE_URL = (
 MODEL_NAME = "ggml-small.en.bin"
 MODEL_URL = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{MODEL_NAME}"
 SERVER_EXE = "whisper-server.exe"
+# Stamped with WHISPER_VERSION after a successful binary fetch, so a re-run skips the ~500 MB
+# download when the installed binary already matches the pinned version (and re-fetches when it
+# doesn't). The model has its own presence guard below.
+WHISPER_VERSION_MARKER = ".whisper-version"
 
 
 def _http_download(url: str, dest: Path) -> None:
@@ -34,36 +38,49 @@ def _http_download(url: str, dest: Path) -> None:
                 f.write(chunk)
 
 
+def _marker_matches(marker: Path) -> bool:
+    """True iff the version stamp exists and equals the pinned WHISPER_VERSION."""
+    try:
+        return marker.read_text(encoding="utf-8").strip() == WHISPER_VERSION
+    except OSError:
+        return False
+
+
 def fetch_whisper(dest: Path, *, download: Callable[[str, Path], None] = _http_download) -> Path:
     """Download + lay out whisper-server and the model into ``dest``. Returns the server exe path.
 
     The CUDA zips nest everything under ``Release/``; this flattens it so the exe + DLLs sit
-    directly in ``dest`` (the default ``--whisper-bin`` location). A present model is not
-    re-downloaded. Raises if the server binary is missing after extraction.
+    directly in ``dest`` (the default ``--whisper-bin`` location). Idempotent: a binary that
+    already matches the pinned ``WHISPER_VERSION`` (and a present model) is not re-downloaded, so
+    re-running an install only fetches what actually changed. Raises if the server binary is
+    missing after extraction.
     """
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        zip_path = Path(tmp) / WHISPER_ZIP
-        download(WHISPER_RELEASE_URL, zip_path)
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(dest)
-
-    nested = dest / "Release"
-    if nested.is_dir():
-        for item in nested.iterdir():
-            target = dest / item.name
-            if target.is_dir():
-                shutil.rmtree(target)
-            elif target.exists():
-                target.unlink()
-            shutil.move(str(item), str(dest))
-        nested.rmdir()
-
     exe = dest / SERVER_EXE
-    if not exe.exists():
-        raise RuntimeError(f"{SERVER_EXE} not found after extracting {WHISPER_ZIP} into {dest}")
+    marker = dest / WHISPER_VERSION_MARKER
+    if not (exe.exists() and _marker_matches(marker)):
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / WHISPER_ZIP
+            download(WHISPER_RELEASE_URL, zip_path)
+            with zipfile.ZipFile(zip_path) as z:
+                z.extractall(dest)
+
+        nested = dest / "Release"
+        if nested.is_dir():
+            for item in nested.iterdir():
+                target = dest / item.name
+                if target.is_dir():
+                    shutil.rmtree(target)
+                elif target.exists():
+                    target.unlink()
+                shutil.move(str(item), str(dest))
+            nested.rmdir()
+
+        if not exe.exists():
+            raise RuntimeError(f"{SERVER_EXE} not found after extracting {WHISPER_ZIP} into {dest}")
+        marker.write_text(WHISPER_VERSION, encoding="utf-8")   # stamp only after a complete fetch
 
     model = dest / MODEL_NAME
     if not model.exists():

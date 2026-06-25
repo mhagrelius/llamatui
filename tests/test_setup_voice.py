@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from llamatui.setup_voice import (
-    fetch_whisper, WHISPER_RELEASE_URL, MODEL_URL, MODEL_NAME, SERVER_EXE,
+    fetch_whisper, WHISPER_RELEASE_URL, WHISPER_VERSION, WHISPER_VERSION_MARKER,
+    MODEL_URL, MODEL_NAME, SERVER_EXE,
 )
 
 
@@ -55,6 +56,50 @@ def test_existing_model_is_not_redownloaded(tmp_path):
     fetch_whisper(tmp_path, download=dl)
     assert (tmp_path / MODEL_NAME).read_bytes() == b"ALREADY"
     assert MODEL_URL not in dl.calls
+
+
+def test_rerun_with_matching_version_skips_zip_download(tmp_path):
+    dl1 = _make_download(_zip_bytes(["Release/whisper-server.exe", "Release/ggml.dll"]))
+    fetch_whisper(tmp_path, download=dl1)                 # first install lays down exe + marker
+    dl2 = _make_download(_zip_bytes(["Release/whisper-server.exe"]))
+    exe = fetch_whisper(tmp_path, download=dl2)           # re-run to "update" the install
+    assert exe.exists()
+    assert WHISPER_RELEASE_URL not in dl2.calls           # the ~500 MB zip is NOT re-downloaded
+
+
+def test_first_fetch_writes_version_marker(tmp_path):
+    dl = _make_download(_zip_bytes(["Release/whisper-server.exe"]))
+    fetch_whisper(tmp_path, download=dl)
+    assert (tmp_path / WHISPER_VERSION_MARKER).read_text().strip() == WHISPER_VERSION
+
+
+def test_version_bump_refetches_zip(tmp_path):
+    dl1 = _make_download(_zip_bytes(["Release/whisper-server.exe"]))
+    fetch_whisper(tmp_path, download=dl1)
+    (tmp_path / WHISPER_VERSION_MARKER).write_text("v0.0.0-old")   # pinned version moved on
+    dl2 = _make_download(_zip_bytes(["Release/whisper-server.exe"]))
+    fetch_whisper(tmp_path, download=dl2)
+    assert WHISPER_RELEASE_URL in dl2.calls               # stale marker → re-fetch the binary
+
+
+def test_legacy_binary_without_marker_refetches(tmp_path):
+    dl1 = _make_download(_zip_bytes(["Release/whisper-server.exe"]))
+    fetch_whisper(tmp_path, download=dl1)
+    (tmp_path / WHISPER_VERSION_MARKER).unlink()          # pre-marker install
+    dl2 = _make_download(_zip_bytes(["Release/whisper-server.exe"]))
+    fetch_whisper(tmp_path, download=dl2)
+    assert WHISPER_RELEASE_URL in dl2.calls               # no marker → re-fetch (and stamp it)
+
+
+def test_skips_binary_but_still_fetches_missing_model(tmp_path):
+    dl1 = _make_download(_zip_bytes(["Release/whisper-server.exe"]))
+    fetch_whisper(tmp_path, download=dl1)
+    (tmp_path / MODEL_NAME).unlink()                      # binary stays, model gone
+    dl2 = _make_download(_zip_bytes(["Release/whisper-server.exe"]))
+    fetch_whisper(tmp_path, download=dl2)
+    assert WHISPER_RELEASE_URL not in dl2.calls           # binary skipped
+    assert MODEL_URL in dl2.calls                         # model still fetched
+    assert (tmp_path / MODEL_NAME).exists()
 
 
 def test_missing_server_binary_raises(tmp_path):
