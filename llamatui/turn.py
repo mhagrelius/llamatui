@@ -143,6 +143,8 @@ class TurnStream:
         self._t0 = clock()
         self._calls: dict[str, ToolCall] = {}
         self._current: str | None = None
+        self._out_sum = 0
+        self._reason_sum = 0
         self.state = TurnState()
 
     # ---- timing ----------------------------------------------------------
@@ -177,8 +179,15 @@ class TurnStream:
                 call.done = True
                 call.result, call.failed = _result_text(c)
         elif ctype == "usage":
-            self.state.usage_details = getattr(c, "usage_details", None)
-            self.state.timings = _extract_timings(c)
+            details = dict(getattr(c, "usage_details", None) or {})
+            self._out_sum += details.get("output_token_count") or 0
+            self._reason_sum += details.get("reasoning_output_token_count") or 0
+            if self._out_sum:
+                details["output_token_count"] = self._out_sum
+            if self._reason_sum:
+                details["reasoning_output_token_count"] = self._reason_sum
+            self.state.usage_details = details          # input/total stay last segment's
+            self.state.timings = _extract_timings(c)    # last segment's server rate
 
     def _ingest_call(self, c: Any) -> None:
         name = getattr(c, "name", None)

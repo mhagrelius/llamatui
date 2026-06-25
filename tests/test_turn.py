@@ -134,3 +134,24 @@ def test_extract_query_tolerates_partial_json():
     assert extract_query('{"query":"hello"}') == "hello"
     assert extract_query("") is None
     assert extract_query('{"n":1}') is None
+
+
+def _usage_update(out, reason):
+    c = SimpleNamespace(
+        type="usage",
+        usage_details={"output_token_count": out, "input_token_count": 100,
+                       "total_token_count": 100 + out, "reasoning_output_token_count": reason},
+        raw_representation=None,
+    )
+    return SimpleNamespace(contents=[c])
+
+
+def test_usage_sums_across_segments_keeps_last_context():
+    s = TurnStream()
+    s.ingest(_usage_update(10, 3))
+    s.ingest(_usage_update(20, 5))
+    u = s.state.usage_details
+    assert u["output_token_count"] == 30          # summed generated tokens
+    assert u["reasoning_output_token_count"] == 8  # summed reasoning
+    assert u["input_token_count"] == 100           # last segment's prompt
+    assert u["total_token_count"] == 120           # last segment's total (cumulative context)
