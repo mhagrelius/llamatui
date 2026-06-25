@@ -51,7 +51,6 @@ class ApprovalModal(ModalScreen[dict]):
         if name == "write_file" and self._workspace is not None:
             args = getattr(call, "arguments", "") or ""
             try:
-                import json
                 parsed = json.loads(args) if isinstance(args, str) else dict(args)
             except Exception:
                 parsed = {}

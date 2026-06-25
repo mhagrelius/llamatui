@@ -258,8 +258,12 @@ class Workspace:
         if not target.exists():
             body = content if len(content) <= PREVIEW_CAP else content[:PREVIEW_CAP] + "\n[…]"
             return f"new file: {rel}\n\n{body}"
+        # Stat-gate: check size BEFORE reading bytes so a huge existing file is never loaded.
+        st_size = target.stat().st_size
+        if st_size > PREVIEW_CAP or len(content) > PREVIEW_CAP:
+            return f"overwrite {rel}: {st_size} bytes → {len(content)} bytes"
         old = target.read_bytes()
-        if b"\x00" in old[:4096] or len(old) > PREVIEW_CAP or len(content) > PREVIEW_CAP:
+        if b"\x00" in old[:4096]:
             return f"overwrite {rel}: {len(old)} bytes → {len(content)} bytes"
         diff = difflib.unified_diff(
             old.decode("utf-8", errors="replace").splitlines(),
