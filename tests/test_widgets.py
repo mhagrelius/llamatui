@@ -29,9 +29,10 @@ def test_render_status_omits_empty_voice():
 
 
 # ---- append_command_output tail-capping (no Textual App needed) ------------------
-# Tests exercise AssistantTurn._cmd_output_buf directly — no Textual app is spun up.
-# We call the pure buffer-accumulation logic via a minimal stub that skips the widget
-# mount/query side (which requires a running App) but exercises the real cap arithmetic.
+# Tests call the REAL AssistantTurn.append_command_output end-to-end.
+# We stub only what needs a running App: query_one returns a fake tools container
+# whose mount() swaps the freshly-created Static for a lightweight _FakeTailStatic
+# (so _cmd_tail.update() is captured without a Textual render loop).
 
 class _FakeTailStatic:
     """Minimal stand-in for Textual Static — records the last update() call."""
@@ -41,51 +42,32 @@ class _FakeTailStatic:
         self.content = text
 
 
-class _FakeTools:
-    """Minimal stand-in for the #tools Vertical — captures mount calls."""
-    def __init__(self, tail):
-        self._tail = tail
-    def mount(self, widget):
-        pass  # no-op; _cmd_tail already set on the turn
+def _run_appends(chunks: list[str]) -> str:
+    """Drive the REAL append_command_output on a minimal AssistantTurn stub.
 
-
-def _run_appends(chunks: list[str], cap: int = _CMD_OUTPUT_TAIL_CAP) -> str:
-    """Drive the real append_command_output logic from AssistantTurn without a running App.
-
-    Stubs out query_one and mount so the real method runs end-to-end (caching, line list,
-    cap arithmetic) and the returned string is what the tail Static would display.
+    query_one('#tools') returns a fake Vertical whose mount() intercepts the
+    newly-created Static and replaces _cmd_tail with a _FakeTailStatic so that
+    subsequent update() calls are captured without a running Textual App.
     """
     from llamatui.widgets import AssistantTurn
     turn = AssistantTurn.__new__(AssistantTurn)
     turn._cmd_output_lines = []
-    fake_tail = _FakeTailStatic()
     turn._cmd_tail = None
 
+    fake_tail = _FakeTailStatic()
+
+    class _FakeTools:
+        def mount(self, widget):
+            # Replace the real Static with our recorder so update() is captured.
+            turn._cmd_tail = fake_tail
+
     def _query_one(selector, cls=None):
-        # Return a fake tools container; mount does nothing (tail is set directly)
-        return _FakeTools(fake_tail)
+        return _FakeTools()
 
     turn.query_one = _query_one
 
-    # Patch mount so the first call to append_command_output sets _cmd_tail to fake_tail
-    orig_mount_check = None  # unused; we intercept via override below
-
-    def _patched_append(text):
-        if turn._cmd_tail is None:
-            turn._cmd_tail = fake_tail
-            # Mimic what real mount does — nothing needed
-        # Run the real accumulation logic
-        new_lines = text.splitlines(keepends=True)
-        if turn._cmd_output_lines and not turn._cmd_output_lines[-1].endswith(("\n", "\r")):
-            turn._cmd_output_lines[-1] += new_lines[0] if new_lines else ""
-            new_lines = new_lines[1:]
-        turn._cmd_output_lines.extend(new_lines)
-        if len(turn._cmd_output_lines) > cap:
-            turn._cmd_output_lines = turn._cmd_output_lines[-cap:]
-        fake_tail.update("".join(turn._cmd_output_lines))
-
     for chunk in chunks:
-        _patched_append(chunk)
+        turn.append_command_output(chunk)
 
     from rich.text import Text
     content = fake_tail.content
