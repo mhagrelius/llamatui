@@ -12,6 +12,7 @@ dependencies = [
     "platformdirs>=4",
     "send2trash>=1.8",
     "textual>=0.86",
+    "trafilatura>=2.1",
 ]
 
 [project.optional-dependencies]

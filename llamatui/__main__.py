@@ -64,6 +64,8 @@ def main() -> None:
                     help="default workspace root for new chats (default: cwd)")
     ap.add_argument("--no-fs", action="store_true",
                     help="disable the filesystem tools")
+    ap.add_argument("--no-fetch", action="store_true",
+                    help="disable the web page fetch tool (fetch_url)")
     args = ap.parse_args()
 
     if args.setup_voice:
@@ -91,6 +93,7 @@ def main() -> None:
         whisper_url=args.whisper_url,
         fs=not args.no_fs,
         workspace=args.workspace,
+        fetch=not args.no_fetch,
     )
     LlamaTUI(config, cli_overrides=cli_overrides(args)).run()
 

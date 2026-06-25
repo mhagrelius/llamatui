@@ -22,6 +22,7 @@ from .filesystem import FILESYSTEM_GUIDANCE
 from .instructions import build_instructions
 from .memory import MEMORY_GUIDANCE
 from .tools import WEB_SEARCH_GUIDANCE
+from .webfetch import FETCH_GUIDANCE
 
 DEFAULT_SYSTEM = (
     "You are Tilde, a personal AI assistant who lives entirely on the user's own machine, running "
@@ -59,11 +60,12 @@ DEFAULT_SYSTEM = (
 
 
 class AgentBuilder:
-    def __init__(self, base_url: str, model: str, *, web_tool=None, memory=None) -> None:
+    def __init__(self, base_url: str, model: str, *, web_tool=None, memory=None, fetcher=None) -> None:
         self._base_url = base_url
         self._model = model
         self._web_tool = web_tool
         self._memory = memory
+        self._fetcher = fetcher
         self._workspace = None
         self._instructions: str = ""
         self._tools: list = []
@@ -105,6 +107,9 @@ class AgentBuilder:
         if self._web_tool is not None:
             tools.append(self._web_tool)
             notes.append(WEB_SEARCH_GUIDANCE)
+        if self._fetcher is not None:
+            tools.extend(self._fetcher.build_tools())
+            notes.append(FETCH_GUIDANCE)
         if self._memory is not None:
             tools.extend(self._memory.build_tools())
             notes.append(MEMORY_GUIDANCE)

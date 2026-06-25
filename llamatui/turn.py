@@ -28,6 +28,7 @@ RUNNING = "running"
 AWAITING = "awaiting approval"  # spec §H: turn is paused waiting for the user to approve a call
 
 _QUERY_RE = re.compile(r'"query"\s*:\s*"([^"]*)"')
+_URL_RE = re.compile(r'"url"\s*:\s*"([^"]*)"')
 
 # A model may leak a tool call into its answer as plain text (e.g. "<tool_call><function=
 # remember>...") instead of a structured call. That never executes, so strip it from the
@@ -37,12 +38,13 @@ _TOOL_TAG_RE = re.compile(r"</?tool_call\s*>|</?function[^>]*>|</?parameter[^>]*
 
 
 def extract_query(args: str) -> str | None:
-    """Pull a ``"query"`` value out of a (possibly partial) tool-call argument blob.
-
-    Tool arguments stream in token by token, so the JSON is often incomplete; a forgiving
-    regex beats a real parser here. Returns ``None`` when no query is visible yet.
+    """Pull the call's primary displayable argument out of a (possibly partial) tool-call
+    argument blob — a ``"query"`` (search) or, failing that, a ``"url"`` (fetch). Tool
+    arguments stream in token by token, so the JSON is often incomplete; a forgiving regex
+    beats a real parser. Returns ``None`` when nothing is visible yet.
     """
-    m = _QUERY_RE.search(args or "")
+    text = args or ""
+    m = _QUERY_RE.search(text) or _URL_RE.search(text)
     return m.group(1) if m else None
 
 

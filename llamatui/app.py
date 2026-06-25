@@ -42,6 +42,7 @@ from .settings_screen import SettingsScreen
 from .storage import Store, connect
 from .filesystem import ALWAYS_PROMPT_TOOLS
 from .tools import build_exa_tool, exa_key_present
+from .webfetch import WebFetcher
 from .turn import AWAITING, TurnStream, strip_tool_noise
 from .turn_view import TurnView, metrics_blob
 from .voice import VoiceInput, keyboard_initial_delay_s
@@ -87,7 +88,7 @@ class Config:
     def __init__(
         self, url, model, system, db_path=None, web=True, memory=True,
         voice=True, whisper_bin=None, whisper_model=None, whisper_url=None,
-        fs=True, workspace=None,
+        fs=True, workspace=None, fetch=True,
     ):
         self.url = url
         self.model = model
@@ -101,6 +102,7 @@ class Config:
         self.whisper_url = whisper_url
         self.fs = fs
         self.workspace = workspace
+        self.fetch = fetch
 
 
 class LlamaTUI(App):
@@ -134,6 +136,8 @@ class LlamaTUI(App):
         self.conversation: Conversation | None = None
         self.web_tool = None
         self.web_enabled = False
+        self.web_fetcher: WebFetcher | None = None
+        self.fetch_enabled = False
         self.memory: Memory | None = None
         self.whisper: WhisperServer | None = None
         self.dictation: Dictation | None = None
@@ -172,9 +176,14 @@ class LlamaTUI(App):
             self.web_tool = build_exa_tool()
             try:
                 await asyncio.wait_for(self.web_tool.connect(), timeout=12)
-                self.web_enabled = True
+                # Fail loud: the allow-list (["web_search_exa"]) must match a live Exa tool.
+                self.web_enabled = bool(self.web_tool.functions)
             except Exception:
                 self.web_enabled = False
+
+        if self.config.fetch and WebFetcher.available():
+            self.web_fetcher = WebFetcher()
+            self.fetch_enabled = True
 
         if self.config.memory:
             # Keyword recall + the ambient block work immediately; semantic recall upgrades in
@@ -212,6 +221,7 @@ class LlamaTUI(App):
             self.config.url, self.config.model,
             web_tool=self.web_tool if self.web_enabled else None,
             memory=self.memory,
+            fetcher=self.web_fetcher if self.fetch_enabled else None,
         )
         self._rebuild_agent()
         self._refresh_sidebar()
@@ -223,11 +233,12 @@ class LlamaTUI(App):
             else "web search [b]off[/]"
         )
         mem = f"memory [b]{'on' if self.memory is not None else 'off'}[/]"
+        fetch = f"fetch [b]{'on' if self.fetch_enabled else 'off'}[/]"
         voice = f"voice [b]{'on' if self.voice_enabled else 'off'}[/]"
         self._write_system(
             f"Connected to [b]{self.config.url}[/]  ·  model [b]{self.model_label}[/]"
             + (f"  ·  ctx {self.context_window:,}" if self.context_window else "")
-            + f"  ·  {web}  ·  {mem}  ·  {voice}"
+            + f"  ·  {web}  ·  {mem}  ·  {fetch}  ·  {voice}"
             + "\nType a message, or [cyan]/help[/] for commands."
         )
         self._status("ready", connected=connected)
@@ -241,6 +252,11 @@ class LlamaTUI(App):
         if self.web_tool is not None:
             try:
                 await self.web_tool.close()
+            except Exception:
+                pass
+        if self.web_fetcher is not None:
+            try:
+                await self.web_fetcher.aclose()
             except Exception:
                 pass
         if self.store is not None:

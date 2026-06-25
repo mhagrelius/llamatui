@@ -26,9 +26,9 @@ use these names in code, comments, and reviews rather than inventing new ones.
   invariant is enforced in two cooperating places: the **Conversation** (what enters history)
   and the chat client (what is sent on the wire, `client._prepare_message_for_openai`).
 
-- **Tool call** — a model-initiated invocation of a tool (Exa web search via MCP, or the
-  in-process memory tools). Represented by `turn.ToolCall` (name, streamed args, done flag,
-  parsed `query`, and the captured `result`/`failed`). The UI surfaces the actual result on the
+- **Tool call** — a model-initiated invocation of a tool (Exa web search via MCP, the
+  in-process memory tools, the filesystem workspace tools, or the in-process `fetch_url` web fetch). Represented by `turn.ToolCall` (name, streamed args, done flag,
+  parsed primary arg (`query` for search, `url` for fetch, via `extract_query`), and the captured `result`/`failed`). The UI surfaces the actual result on the
   chip so "done" can't mask a no-op or error. A small local model sometimes *leaks* a tool call
   into its answer as plain text (`<tool_call><function=…>`); `strip_tool_noise` removes that from
   the shown and persisted answer, since it never executed.
@@ -154,6 +154,18 @@ use these names in code, comments, and reviews rather than inventing new ones.
   release to stop — but terminals (and Textual) expose no key-release, so "release" is
   inferred from a gap in the key's OS **auto-repeat** burst. See [[VoiceInput]] for the mapping and
   ADR-0002 for the hold mechanism.
+
+- **WebFetcher** — the web page fetch deep module (`webfetch.py`). Owns the URL safety check
+  (scheme allowlist; **no** localhost/private-IP block — a single-user local app may read its own
+  services), manual redirect following, the content-type/size handling, and trafilatura
+  readability extraction → markdown. The HTTP client and the extractor are *injectable seams*, so
+  the whole pipeline is tested with no network and no trafilatura (`tests/test_webfetch.py`). The
+  thin surface — `build_tools()` (one auto-run `fetch_url`) + `FETCH_GUIDANCE` — is the **fourth
+  tool shape**: an in-process *network-egress, auto-run* function tool, distinct from remote-MCP
+  (Exa), the in-process memory tools, and the approval-gated filesystem tools. Division of labor
+  with web search is structural: **Exa = discovery** (restricted to `web_search_exa`),
+  **WebFetcher = retrieval**. Fetched page text is untrusted DATA (same injection-defense framing
+  as memory/filesystem).
 
 - **Workspace** — the per-conversation rooted file/system scope (`filesystem.py`). Owns the
   resolved `root` path, the in/out **classification** predicate (`_confined`) that all read and
