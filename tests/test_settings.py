@@ -171,3 +171,9 @@ def test_parse_form_thinking_budget_allows_minus_one_but_not_minus_two():
 def test_parse_form_max_tokens_must_be_positive():
     s, errors = parse_form(_raw(max_tokens="0"), DEFAULTS)
     assert s is None and "max_tokens" in errors
+
+
+def test_default_workspace_roundtrips(tmp_path):
+    from llamatui.settings import from_dict, Settings
+    assert from_dict({"default_workspace": "C:/proj"}).default_workspace == "C:/proj"
+    assert Settings().default_workspace is None

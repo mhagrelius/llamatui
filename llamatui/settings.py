@@ -38,6 +38,7 @@ class Settings:
     max_tokens: int = 32000
     voice_mode: VoiceMode = VoiceMode.TOGGLE
     show_thinking: bool = True
+    default_workspace: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -48,6 +49,7 @@ class Settings:
             "max_tokens": self.max_tokens,
             "voice_mode": self.voice_mode.value,
             "show_thinking": self.show_thinking,
+            "default_workspace": self.default_workspace,
         }
 
 
@@ -73,6 +75,7 @@ def from_dict(d: dict) -> Settings:
             max_tokens=int(present("max_tokens", DEFAULTS.max_tokens)),
             voice_mode=VoiceMode.parse(present("voice_mode", DEFAULTS.voice_mode)),
             show_thinking=bool(present("show_thinking", DEFAULTS.show_thinking)),
+            default_workspace=(None if present("default_workspace", DEFAULTS.default_workspace) is None else str(d["default_workspace"])),
         )
     except (TypeError, ValueError):
         return DEFAULTS
