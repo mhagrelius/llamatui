@@ -136,6 +136,14 @@ def test_extract_query_tolerates_partial_json():
     assert extract_query('{"n":1}') is None
 
 
+def test_extract_query_falls_back_to_url():
+    assert extract_query('{"query": "cats"}') == "cats"
+    assert extract_query('{"url": "https://example.com/x"}') == "https://example.com/x"
+    # query wins when both are present
+    assert extract_query('{"url": "https://e.com", "query": "q"}') == "q"
+    assert extract_query('{"foo": "bar"}') is None
+
+
 def _usage_update(out, reason):
     c = SimpleNamespace(
         type="usage",
