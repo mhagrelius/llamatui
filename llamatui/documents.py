@@ -15,6 +15,11 @@ try:  # feature-detect: never hard-fail at import if a dep is absent
 except ImportError:  # pragma: no cover - exercised via monkeypatch
     docx = None
 
+try:
+    import pypdf
+except ImportError:  # pragma: no cover - exercised via monkeypatch
+    pypdf = None
+
 
 @dataclass
 class DocumentResult:
@@ -46,6 +51,12 @@ def extract_document(data: bytes, filename: str) -> DocumentResult:
     back to not_a_document, so a mislabeled file reads as binary like before).
     """
     ext = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        if not data.startswith(b"%PDF"):
+            return DocumentResult.not_a_document()
+        if pypdf is None:
+            return DocumentResult.failed("install pypdf to read PDF files")
+        return _extract_pdf(data)
     if ext == ".docx":
         if data[:4] != b"PK\x03\x04":  # DOCX is a ZIP container
             return DocumentResult.not_a_document()
@@ -53,6 +64,30 @@ def extract_document(data: bytes, filename: str) -> DocumentResult:
             return DocumentResult.failed("install python-docx to read DOCX files")
         return _extract_docx(data)
     return DocumentResult.not_a_document()
+
+
+def _extract_pdf(data: bytes) -> DocumentResult:
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            # Many PDFs are "encrypted" with an empty password and read fine;
+            # only treat a real (non-empty) password as a failure.
+            try:
+                reader.decrypt("")
+            except Exception:
+                return DocumentResult.failed("encrypted PDF; cannot read")
+            if reader.is_encrypted:
+                return DocumentResult.failed("encrypted PDF; cannot read")
+        # Pages joined by a blank line; no [page N] markers (clean text).
+        pages = [(page.extract_text() or "").strip() for page in reader.pages]
+    except Exception as exc:  # never crash the TUI on a bad file
+        return DocumentResult.failed(f"could not read PDF: {exc}")
+    text = "\n\n".join(p for p in pages if p).strip()
+    if not text:
+        return DocumentResult.needs_ocr(
+            "image-only PDF; no text layer — OCR is a separate capability"
+        )
+    return DocumentResult.extracted(text)
 
 
 def _extract_docx(data: bytes) -> DocumentResult:

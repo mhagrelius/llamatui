@@ -69,3 +69,70 @@ def test_missing_python_docx_reports_failed(monkeypatch):
     result = extract_document(_docx_bytes(lambda doc: doc.add_paragraph("x")), "doc.docx")
     assert result.status == "failed"
     assert "python-docx" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# PDF tests
+# ---------------------------------------------------------------------------
+
+
+def _pdf_with_text(text: str) -> bytes:
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", size=14)
+    pdf.cell(text=text)
+    return bytes(pdf.output())
+
+
+def _pdf_blank_page() -> bytes:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def _pdf_encrypted() -> bytes:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.encrypt("secret")  # non-empty password -> not readable with ""
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def test_pdf_with_bad_magic_is_not_a_document():
+    assert extract_document(b"not a pdf", "fake.pdf").status == "not_a_document"
+
+
+def test_pdf_extracts_text_layer():
+    result = extract_document(_pdf_with_text("Hello from PDF"), "doc.pdf")
+    assert result.status == "extracted"
+    assert "Hello from PDF" in result.text
+
+
+def test_image_only_pdf_needs_ocr():
+    result = extract_document(_pdf_blank_page(), "scan.pdf")
+    assert result.status == "needs_ocr"
+    assert result.reason
+
+
+def test_encrypted_pdf_fails():
+    result = extract_document(_pdf_encrypted(), "locked.pdf")
+    assert result.status == "failed"
+    assert "encrypted" in result.reason.lower()
+
+
+def test_missing_pypdf_reports_failed(monkeypatch):
+    import llamatui.documents as documents
+
+    monkeypatch.setattr(documents, "pypdf", None)
+    result = extract_document(_pdf_with_text("x"), "doc.pdf")
+    assert result.status == "failed"
+    assert "pypdf" in result.reason
