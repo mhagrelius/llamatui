@@ -107,6 +107,22 @@ def _pdf_encrypted() -> bytes:
     return buf.getvalue()
 
 
+def _pdf_empty_password_with_text(text: str) -> bytes:
+    """Build a text-layer PDF encrypted with an empty password (should still extract)."""
+    from pypdf import PdfReader, PdfWriter
+
+    # Start with a text-layer PDF built by fpdf2
+    source_bytes = _pdf_with_text(text)
+    reader = PdfReader(io.BytesIO(source_bytes))
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    writer.encrypt("")  # empty user password — pypdf 6.x: decrypt("") returns OWNER_PASSWORD or USER_PASSWORD
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
 def test_pdf_with_bad_magic_is_not_a_document():
     assert extract_document(b"not a pdf", "fake.pdf").status == "not_a_document"
 
@@ -127,6 +143,12 @@ def test_encrypted_pdf_fails():
     result = extract_document(_pdf_encrypted(), "locked.pdf")
     assert result.status == "failed"
     assert "encrypted" in result.reason.lower()
+
+
+def test_empty_password_encrypted_pdf_extracts():
+    result = extract_document(_pdf_empty_password_with_text("Secret memo body"), "doc.pdf")
+    assert result.status == "extracted"
+    assert "Secret memo body" in result.text
 
 
 def test_missing_pypdf_reports_failed(monkeypatch):

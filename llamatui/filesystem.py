@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Annotated
 
 from agent_framework import FunctionTool
-from llamatui.documents import DocumentResult, extract_document
+from llamatui.documents import extract_document
 
 
 CMD_OUTPUT_CAP = 10_000
@@ -122,11 +122,11 @@ async def _default_runner(command, *, cwd, on_output=None, output_cap=CMD_OUTPUT
     return CommandResult(_cap_output("".join(buf), output_cap), code, status)
 
 
-READ_CAP = 100_000
+READ_CAP = 100_000  # chars of file content surfaced to the model
 # Extracted-document text is external/opaque content (web threat model): it
 # must not be able to forge or close the <file_contents> boundary. Plain file
 # reads stay raw — neutralizing them is lossy (ADR 0003).
-_FILE_ENVELOPE_TAG_RE = re.compile(r"<(/?)file_contents", re.IGNORECASE)  # chars of file content surfaced to the model
+_FILE_ENVELOPE_TAG_RE = re.compile(r"<(/?)file_contents", re.IGNORECASE)
 PREVIEW_CAP = 8_000  # chars of new content / diff shown in the approval modal
 MAX_FILES_SCANNED = 2000
 MAX_MATCHES = 100

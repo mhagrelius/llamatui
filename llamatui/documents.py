@@ -72,11 +72,13 @@ def _extract_pdf(data: bytes) -> DocumentResult:
         if reader.is_encrypted:
             # Many PDFs are "encrypted" with an empty password and read fine;
             # only treat a real (non-empty) password as a failure.
+            # pypdf 6.x: is_encrypted stays True after a successful decrypt,
+            # so check the return value instead of re-checking is_encrypted.
             try:
-                reader.decrypt("")
+                from pypdf import PasswordType
+                if reader.decrypt("") == PasswordType.NOT_DECRYPTED:
+                    return DocumentResult.failed("encrypted PDF; cannot read")
             except Exception:
-                return DocumentResult.failed("encrypted PDF; cannot read")
-            if reader.is_encrypted:
                 return DocumentResult.failed("encrypted PDF; cannot read")
         # Pages joined by a blank line; no [page N] markers (clean text).
         pages = [(page.extract_text() or "").strip() for page in reader.pages]
@@ -91,11 +93,10 @@ def _extract_pdf(data: bytes) -> DocumentResult:
 
 
 def _extract_docx(data: bytes) -> DocumentResult:
-    from docx.oxml.ns import qn
-    from docx.table import Table
-    from docx.text.paragraph import Paragraph
-
     try:
+        from docx.oxml.ns import qn
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
         document = docx.Document(io.BytesIO(data))
         lines: list[str] = []
         # Walk body children in document order: python-docx's .paragraphs
