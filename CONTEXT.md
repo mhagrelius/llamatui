@@ -167,6 +167,12 @@ use these names in code, comments, and reviews rather than inventing new ones.
   **WebFetcher = retrieval**. Fetched page text is untrusted DATA (same injection-defense framing
   as memory/filesystem).
 
+- **documents** — pure bytes→text extractor for PDF/DOCX behind an explicit
+  `DocumentResult` (`extracted` / `not_a_document` / `needs_ocr` / `failed`).
+  `read_file` routes through it before its binary check; extracted text
+  neutralizes the `<file_contents>` boundary (ADR 0003). `needs_ocr` is the
+  hook for the deferred vision-OCR sub-project.
+
 - **Workspace** — the per-conversation rooted file/system scope (`filesystem.py`). Owns the
   resolved `root` path, the in/out **classification** predicate (`_confined`) that all read and
   write tools share — an outside path returns a clear `OUTSIDE_MSG`, never escalates (the

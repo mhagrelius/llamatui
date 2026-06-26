@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Annotated
 
 from agent_framework import FunctionTool
+from llamatui.documents import extract_document
 
 
 CMD_OUTPUT_CAP = 10_000
@@ -121,6 +123,10 @@ async def _default_runner(command, *, cwd, on_output=None, output_cap=CMD_OUTPUT
 
 
 READ_CAP = 100_000  # chars of file content surfaced to the model
+# Extracted-document text is external/opaque content (web threat model): it
+# must not be able to forge or close the <file_contents> boundary. Plain file
+# reads stay raw — neutralizing them is lossy (ADR 0003).
+_FILE_ENVELOPE_TAG_RE = re.compile(r"<(/?)file_contents", re.IGNORECASE)
 PREVIEW_CAP = 8_000  # chars of new content / diff shown in the approval modal
 MAX_FILES_SCANNED = 2000
 MAX_MATCHES = 100
@@ -198,6 +204,19 @@ class Workspace:
         if not target.is_file():
             return f"Not a file: {path}"
         raw = target.read_bytes()
+        doc = extract_document(raw, path)
+        if doc.status == "extracted":
+            # Neutralize the boundary before wrapping (ADR 0003), then cap as usual.
+            text = _FILE_ENVELOPE_TAG_RE.sub(lambda m: f"<{m.group(1)}file-contents", doc.text)
+            note = ""
+            if len(text) > READ_CAP:
+                text = text[:READ_CAP]
+                note = f"\n[truncated to {READ_CAP} chars]"
+            rel = target.relative_to(self.root).as_posix()
+            return f'<file_contents path="{rel}">\n{text}\n</file_contents>{note}'
+        if doc.status in ("needs_ocr", "failed"):
+            return doc.reason
+        # not_a_document: fall through to the existing binary/text handling.
         if b"\x00" in raw[:4096]:
             return f"Binary file ({len(raw)} bytes); not shown."
         text = raw.decode("utf-8", errors="replace")
