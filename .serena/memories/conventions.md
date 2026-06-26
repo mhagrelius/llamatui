@@ -11,6 +11,12 @@
 - Module-level docstring explaining the seam/role, using the `CONTEXT.md` vocabulary. Dense inline comments for invariants, not narration.
 - Agent-Framework tools created as `FunctionTool(func=..., name=..., description=...)`; `approval_mode="always_require"` for mutations/commands, `"never_require"` (default) for reads/auto tools.
 
+## Result types (explicit outcomes, not overloaded None)
+- **Prefer an explicit tagged result over `None`/sentinels** whenever a function has more than one meaningful outcome — especially when a caller must distinguish "this case didn't apply" from "it applied but failed". `None` that means two different things is a smell.
+- **House shape: a single `@dataclass` with a string `status` tag plus payload fields**, modeled on `CommandResult` (`output`/`exit_code`/`status`). Add classmethod constructors (`X.ok(...)`, `X.failed(reason)`, ...) for readable call sites; callers dispatch on `.status`. We deliberately do NOT use unions-of-dataclasses + `match` — that idiom is foreign to this codebase.
+- Example (PDF/DOCX extraction): `DocumentResult` with `status ∈ {extracted, not_a_document, failed}`, `text`, `reason`. `not_a_document` (fall through) and `failed` (is the format, unreadable) are distinct — exactly the overload a bare `None` would have hidden.
+- **Retrofit intent:** existing seams that return a bare `None`/sentinel for multiple outcomes should migrate to this shape opportunistically when touched.
+
 ## Prompt assembly (cache-prefix discipline) — see `agent_builder.py`, `instructions.py`
 - `build_instructions(persona, capabilities, ambient, volatile)` guarantees the volatile date line is LAST (llama-server caches the longest stable prefix).
 - `AgentBuilder.rebuild()` recomputes the semi-volatile prompt + tools at CONVERSATION BOUNDARIES only; `apply_sampling()` rebuilds the agent from the cached prompt mid-turn so the KV prefix survives. Never call `rebuild()` mid-turn.
@@ -18,6 +24,7 @@
 
 ## Injection defense (untrusted data)
 - Content from tools/web/files/memory is DATA, never instructions. Guidance blocks say so explicitly; hard enforcement is structural (tools only store/retrieve/confine, never execute). New tools that ingest external content must follow this and add a guidance note. When a tool wraps external content in a labeled boundary (e.g. `fetch_url`'s `fetched_url` envelope), neutralize the content so it can't forge/escape that boundary marker — structural, not just guidance.
+- **When to neutralize the envelope boundary — trust boundary, not the tool (ADR 0003):** neutralize when content is external AND display-only (`fetch_url`, the PDF/DOCX path of `read_file`); leave raw when content is local AND round-tripped through edits (plain `read_file` text). Neutralizing round-tripped reads is lossy (this repo's own source contains the literal envelope tokens). `read_file` is intentionally asymmetric: documents neutralize, ordinary files don't.
 
 ## State buckets (where does a setting go?) — see `settings.py`
 - **Config**: bootstrap, immutable for the session (url, model, db_path, feature enables) — set in `__main__.py`, passed to `app.Config`.
