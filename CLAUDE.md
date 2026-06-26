@@ -84,7 +84,13 @@ for **non-code** files: markdown, JSON, YAML, TOML, `.env`, configs, lockfiles, 
 
 **Workflow before editing code:** `get_symbols_overview` on the target → `find_symbol`
 (`include_body=true`) for only the symbols you'll touch → edit via the symbolic edit tools. Read
-only the symbols you need, not the whole file.
+only the symbols you need, not the whole file. When you know the symbol name, go straight to
+`find_symbol` — don't `Grep`/`Read` as a warm-up first.
+
+**When delegating to subagents:** this rule binds them too, but you can't audit a subagent's tool
+use afterward — you only see its diff. So **state it in the dispatch** for any task that edits an
+existing `.py` file ("use Serena `find_symbol`/`replace_symbol_body`, not plain Edit"). Creating a
+brand-new file is the exception — plain `Write` is fine there (no existing symbols to navigate).
 
 ## Project memory (Serena)
 
