@@ -115,13 +115,15 @@ def _text_msg(role: str, text: str, *, compacted: bool = False) -> Message:
 
 
 def _strip_images_from(msg: Message) -> tuple[Message, int]:
-    """Return (message with image parts replaced by one '[image removed]' text part, count removed).
-    Returns (msg, 0) unchanged when there are no images."""
+    """Return (message with image parts replaced by an '[image removed]' text part, count removed).
+
+    The original text stays the FIRST text part so _extract_text still surfaces the real text;
+    the placeholder is appended as a separate part. Returns (msg, 0) unchanged when no images."""
     images = [c for c in msg.contents if _is_image_content(c)]
     if not images:
         return msg, 0
-    non_image = [c for c in msg.contents if not _is_image_content(c)]
-    kept = [Content.from_text(text="[image removed]")] + non_image
+    kept = [c for c in msg.contents if not _is_image_content(c)]
+    kept.append(Content.from_text(text="[image removed]"))
     return _rebuild(msg, contents=kept, mark=True), len(images)
 
 
