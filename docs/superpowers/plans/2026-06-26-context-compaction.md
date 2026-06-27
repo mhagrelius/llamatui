@@ -350,7 +350,11 @@ async def test_level1_strips_old_images_not_recent_not_first():
     assert res.removed_images == 1                     # only the "middle" image
     assert any(_is_image_content(c) for c in out[0].contents)   # first kept its image
     assert not any(_is_image_content(c) for c in out[2].contents)  # middle stripped
-    assert "[image removed]" in _extract_text(out[2])
+    # original text stays the PRIMARY text (so summarization sees it, not the placeholder);
+    # the "[image removed]" marker is a separate text part.
+    assert _extract_text(out[2]) == "middle"
+    assert any(getattr(c, "type", None) == "text" and "[image removed]" in (getattr(c, "text", "") or "")
+               for c in out[2].contents)
     assert any(_is_image_content(c) for c in out[4].contents)   # recent kept
 
 
