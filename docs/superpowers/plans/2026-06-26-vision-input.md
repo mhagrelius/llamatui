@@ -42,6 +42,36 @@
 
 ---
 
+## Task 0: dependency setup (`[vision]` extra)
+
+**Files:**
+- Modify: `pyproject.toml`
+
+**Why first:** `pypdfium2` is needed from Task C1 and `Pillow` from A2; install them before any code task. (`Pillow` is already present transitively, but declare it in the extra.)
+
+- [ ] **Step 1: Add the optional extra**
+
+In `pyproject.toml`, mirror the existing `semantic`/`voice` extras (match their exact table format and version-pin style):
+
+```toml
+[project.optional-dependencies]
+vision = ["pypdfium2>=4", "Pillow>=10"]
+```
+
+- [ ] **Step 2: Sync and verify both imports resolve**
+
+Run: `uv sync --extra vision && uv run python -c "import pypdfium2, PIL; print('ok')"`
+Expected: prints `ok`
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add pyproject.toml uv.lock
+git commit -m "build(vision): add optional [vision] extra (pypdfium2, Pillow)"
+```
+
+---
+
 ## Phase A — image-input plumbing
 
 ### Task A1: `ImageAttachment` value type + content-hash id
@@ -1438,26 +1468,17 @@ git commit -m "feat(app): wire OCR engine at composition root with graceful degr
 
 ---
 
-### Task C6: `[vision]` extra, CONTEXT.md, docs
+### Task C6: CONTEXT.md, docs
 
 **Files:**
-- Modify: `pyproject.toml`, `CONTEXT.md`
+- Modify: `CONTEXT.md`
 
-- [ ] **Step 1: Add the optional extra**
+(The `[vision]` extra was added in Task 0.)
 
-In `pyproject.toml`, mirror the `semantic`/`voice` extras:
+- [ ] **Step 1: Run the full suite once more**
 
-```toml
-[project.optional-dependencies]
-vision = ["pypdfium2>=4", "Pillow>=10"]
-```
-
-(Match the exact table/format already used for `voice`/`semantic`; pin floors consistent with the repo's style.)
-
-- [ ] **Step 2: Install and run the suite under the extra**
-
-Run: `uv sync --extra vision` then `uv run pytest`
-Expected: PASS (rasterizer/clipboard tests now have their deps)
+Run: `uv run pytest`
+Expected: PASS
 
 - [ ] **Step 3: Document the seams**
 
@@ -1466,8 +1487,8 @@ Add the five new seams (`ImageAttachment`, `Clipboard`, `PdfRasterizer`, `Vision
 - [ ] **Step 4: Commit**
 
 ```bash
-git add pyproject.toml CONTEXT.md
-git commit -m "build(vision): optional [vision] extra; document new seams"
+git add CONTEXT.md
+git commit -m "docs(vision): document new seams in CONTEXT.md"
 ```
 
 ---
