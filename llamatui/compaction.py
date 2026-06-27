@@ -215,7 +215,15 @@ class Compactor:
         return out, turns
 
     async def _llm_summary(self, existing, region, cfg):
-        return self._heuristic_summary(existing, region, cfg)
+        block = ([_text_msg("assistant", existing)] if existing else []) + list(region)
+        turns = sum(1 for m in region if m.role == "user")
+        try:
+            text = await asyncio.wait_for(self._summarizer(block), cfg.summary_timeout_s)
+        except (Exception, asyncio.TimeoutError):
+            return self._heuristic_summary(existing, region, cfg)
+        if not text:
+            return self._heuristic_summary(existing, region, cfg)
+        return text, turns
 
     async def compact(
         self, messages: list[Message], context_frac: float, cfg: CompactionConfig

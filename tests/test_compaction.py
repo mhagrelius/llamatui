@@ -181,3 +181,45 @@ async def test_level2_rolls_existing_summary_forward():
     assert _is_compacted(out2[1])
     assert sum(1 for m in out2 if _is_compacted(m) and m.role == "assistant") == 1
     assert "old question 0" in _extract_text(out2[1])      # old content retained
+
+
+def _count_user(msgs):
+    return sum(1 for m in msgs if m.role == "user")
+
+
+@pytest.mark.asyncio
+async def test_level2_llm_path_invokes_summarizer():
+    seen = {}
+
+    async def fake(msgs):
+        seen["n"] = len(msgs)
+        return "LLM ROLLING SUMMARY"
+
+    cfg = CompactionConfig(keep_recent_turns=2, use_llm_summary=True)
+    out, res = await Compactor(fake).compact(_long_history(4, keep=2), 0.80, cfg)
+    assert _extract_text(out[1]) == "LLM ROLLING SUMMARY"
+    assert _is_compacted(out[1])
+    assert res.summarized_turns == 4
+    assert seen["n"] >= 8                        # the aged region was passed
+
+
+@pytest.mark.asyncio
+async def test_level2_llm_falls_back_on_empty():
+    async def empty(msgs):
+        return ""
+
+    cfg = CompactionConfig(keep_recent_turns=2, use_llm_summary=True)
+    out, res = await Compactor(empty).compact(_long_history(3, keep=2), 0.80, cfg)
+    assert "old question 0" in _extract_text(out[1])   # heuristic content present
+    assert res.summarized_turns == 3
+
+
+@pytest.mark.asyncio
+async def test_level2_llm_falls_back_on_exception():
+    async def boom(msgs):
+        raise RuntimeError("model down")
+
+    cfg = CompactionConfig(keep_recent_turns=2, use_llm_summary=True)
+    out, res = await Compactor(boom).compact(_long_history(3, keep=2), 0.80, cfg)
+    assert res.summarized_turns == 3
+    assert "old answer 2" in _extract_text(out[1])
