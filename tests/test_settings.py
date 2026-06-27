@@ -186,3 +186,28 @@ def test_parse_form_preserves_default_workspace(tmp_path):
         {"thinking_budget": "10", "temperature": "0.7", "top_p": "", "max_tokens": "100"}, base
     )
     assert errors == {} and out.default_workspace == "C:/proj"
+
+
+def test_compaction_defaults():
+    from llamatui.settings import DEFAULTS
+    assert DEFAULTS.compaction_enabled is True
+    assert DEFAULTS.keep_recent_turns == 5
+    assert DEFAULTS.llm_summary is True
+
+
+def test_compaction_round_trip_through_dict():
+    from llamatui.settings import Settings, from_dict
+    s = Settings(compaction_enabled=False, keep_recent_turns=3, llm_summary=False)
+    assert from_dict(s.to_dict()) == s
+
+
+def test_parse_form_validates_keep_recent_turns():
+    from llamatui.settings import DEFAULTS, parse_form
+    base = DEFAULTS
+    raw_ok = {"thinking_budget": "8192", "temperature": "0.7", "top_p": "",
+              "max_tokens": "32000", "keep_recent_turns": "4"}
+    result, errors = parse_form(raw_ok, base)
+    assert errors == {} and result.keep_recent_turns == 4
+    raw_bad = dict(raw_ok, keep_recent_turns="0")
+    _, errors2 = parse_form(raw_bad, base)
+    assert "keep_recent_turns" in errors2

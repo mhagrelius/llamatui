@@ -39,6 +39,9 @@ class Settings:
     voice_mode: VoiceMode = VoiceMode.TOGGLE
     show_thinking: bool = True
     default_workspace: str | None = None
+    compaction_enabled: bool = True
+    keep_recent_turns: int = 5
+    llm_summary: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -50,6 +53,9 @@ class Settings:
             "voice_mode": self.voice_mode.value,
             "show_thinking": self.show_thinking,
             "default_workspace": self.default_workspace,
+            "compaction_enabled": self.compaction_enabled,
+            "keep_recent_turns": self.keep_recent_turns,
+            "llm_summary": self.llm_summary,
         }
 
 
@@ -76,6 +82,9 @@ def from_dict(d: dict) -> Settings:
             voice_mode=VoiceMode.parse(present("voice_mode", DEFAULTS.voice_mode)),
             show_thinking=bool(present("show_thinking", DEFAULTS.show_thinking)),
             default_workspace=(None if present("default_workspace", DEFAULTS.default_workspace) is None else str(d["default_workspace"])),
+            compaction_enabled=bool(present("compaction_enabled", DEFAULTS.compaction_enabled)),
+            keep_recent_turns=int(present("keep_recent_turns", DEFAULTS.keep_recent_turns)),
+            llm_summary=bool(present("llm_summary", DEFAULTS.llm_summary)),
         )
     except (TypeError, ValueError):
         return DEFAULTS
@@ -162,6 +171,8 @@ def parse_form(raw: dict, base: Settings) -> "tuple[Settings | None, dict]":
     temperature = _float("temperature", 0.0, 2.0)
     top_p = _float("top_p", 0.0, 1.0, allow_blank=True)
     max_tokens = _int("max_tokens", lo=1)
+    _krt_text = str(raw.get("keep_recent_turns", "")).strip()
+    keep_recent_turns = _int("keep_recent_turns", lo=1) if _krt_text else base.keep_recent_turns
 
     if errors:
         return None, errors
@@ -172,6 +183,7 @@ def parse_form(raw: dict, base: Settings) -> "tuple[Settings | None, dict]":
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
+            keep_recent_turns=keep_recent_turns,
         ),
         {},
     )
