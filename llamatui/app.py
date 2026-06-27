@@ -90,7 +90,7 @@ class Config:
     def __init__(
         self, url, model, system, db_path=None, web=True, memory=True,
         voice=True, whisper_bin=None, whisper_model=None, whisper_url=None,
-        fs=True, workspace=None, fetch=True, vision=True,
+        fs=True, workspace=None, fetch=True, vision=True, ocr_dpi=200,
     ):
         self.url = url
         self.model = model
@@ -106,6 +106,7 @@ class Config:
         self.workspace = workspace
         self.fetch = fetch
         self.vision = vision
+        self.ocr_dpi = ocr_dpi
 
 
 class LlamaTUI(App):

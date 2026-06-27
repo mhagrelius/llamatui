@@ -66,6 +66,10 @@ def main() -> None:
                     help="disable the filesystem tools")
     ap.add_argument("--no-fetch", action="store_true",
                     help="disable the web page fetch tool (fetch_url)")
+    ap.add_argument("--no-vision", dest="vision", action="store_false",
+                    help="disable image paste + OCR")
+    ap.add_argument("--ocr-dpi", type=int, default=200,
+                    help="rasterization DPI for scanned-PDF OCR (default 200)")
     args = ap.parse_args()
 
     if args.setup_voice:
@@ -94,6 +98,8 @@ def main() -> None:
         fs=not args.no_fs,
         workspace=args.workspace,
         fetch=not args.no_fetch,
+        vision=args.vision,
+        ocr_dpi=args.ocr_dpi,
     )
     LlamaTUI(config, cli_overrides=cli_overrides(args)).run()
 
