@@ -16,6 +16,7 @@ and lazily creates the conversation row on the first successful turn.
 from __future__ import annotations
 
 from .client import make_message
+from .images import ImageAttachment
 from .storage import Store
 
 
@@ -59,7 +60,18 @@ class Conversation:
         self.system_prompt = conv["system_prompt"]
         self.workspace = conv["workspace"]
         rows = self._store.get_messages(conv_id)
-        self._messages = [make_message(r["role"], r["content"]) for r in rows]
+        msgs = []
+        for r in rows:
+            atts = []
+            if r["role"] == "user":
+                for img in self._store.get_images(r["id"]):
+                    atts.append(ImageAttachment(
+                        data=self._store.image_bytes(img["sha256"]),
+                        media_type=img["media_type"],
+                        source=img["source"] or "stored",
+                    ))
+            msgs.append(make_message(r["role"], r["content"], atts or None))
+        self._messages = msgs
         return rows
 
     # ---- mutation --------------------------------------------------------
@@ -79,6 +91,7 @@ class Conversation:
         answer: str,
         reasoning: str | None,
         metrics: dict | None,
+        user_attachments: list | None = None,
     ) -> None:
         """Record a completed exchange: append the answer and persist both rows.
 
@@ -90,7 +103,9 @@ class Conversation:
             self.id = self._store.create_conversation(
                 self.title, self.system_prompt, self.model, workspace=self.workspace
             )
-        self._store.add_message(self.id, "user", user_text)
+        user_msg_id = self._store.add_message(self.id, "user", user_text)
+        for i, att in enumerate(user_attachments or []):
+            self._store.add_image(user_msg_id, i, att.media_type, att.data, att.source)
         self._store.add_message(self.id, "assistant", answer, reasoning or None, metrics)
         self._store.touch(self.id)
 

@@ -152,3 +152,23 @@ def test_make_message_with_attachment_has_image_part():
     msg = make_message("user", "look", [att])
     # text + framing + image
     assert len(msg.contents) == 3
+
+
+def test_user_images_persist_and_rehydrate(tmp_path):
+    from llamatui.storage import Store, connect
+    from llamatui.conversation import Conversation
+    from llamatui.images import prepare_image
+
+    store = Store(connect(tmp_path / "c.db"))
+    conv = Conversation(store, model="m")
+    att = prepare_image(_png())
+    conv.append_user("look", [att])
+    conv.append_assistant(
+        user_text="look", answer="ok", reasoning=None,
+        metrics=None, user_attachments=[att]
+    )
+
+    reopened = Conversation(store)
+    reopened.load(conv.id)
+    user_msg = reopened.messages_for_agent()[0]
+    assert len(user_msg.contents) == 3   # text + framing + image
