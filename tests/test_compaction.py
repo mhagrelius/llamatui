@@ -1,6 +1,9 @@
+import pytest
+
 from agent_framework import Content, Message
 
 from llamatui.compaction import (
+    Compactor,
     CompactionConfig,
     CompactionResult,
     is_context_overflow,
@@ -84,3 +87,52 @@ def test_overflow_recoverable_safety_properties():
     # unrelated error → not an overflow
     assert overflow_recoverable(attempts=0, enabled=True, approvals_resolved=False,
                                 exc=ConnectionError("down")) is False
+
+
+def test_should_compact_threshold():
+    c = Compactor()
+    cfg = CompactionConfig()
+    assert c.should_compact(0.59, cfg) is False
+    assert c.should_compact(0.60, cfg) is True
+    assert c.should_compact(0.95, cfg) is True
+
+
+def test_should_compact_only_checks_threshold():
+    # should_compact itself only checks the trigger; `enabled` is gated by the caller.
+    c = Compactor()
+    assert c.should_compact(0.10, CompactionConfig()) is False
+
+
+@pytest.mark.asyncio
+async def test_level1_strips_old_images_not_recent_not_first():
+    cfg = CompactionConfig(keep_recent_turns=2)  # window = last 4 msgs
+    msgs = [
+        _image_user("first"),     # 0 first — image preserved (until floor)
+        _assistant("a0"),
+        _image_user("middle"),    # 2 old — image stripped
+        _assistant("a1"),
+        _image_user("recent1"),   # 4 recent — preserved
+        _assistant("a2"),
+        _image_user("recent2"),   # 6 recent — preserved
+        _assistant("a3"),
+    ]
+    out, res = await Compactor().compact(msgs, 0.65, cfg)
+    assert len(out) == len(msgs)                       # Level 1 keeps count
+    assert res.removed_images == 1                     # only the "middle" image
+    assert any(_is_image_content(c) for c in out[0].contents)   # first kept its image
+    assert not any(_is_image_content(c) for c in out[2].contents)  # middle stripped
+    assert "[image removed]" in _extract_text(out[2])
+    assert any(_is_image_content(c) for c in out[4].contents)   # recent kept
+
+
+@pytest.mark.asyncio
+async def test_level1_idempotent_and_no_op_when_small():
+    cfg = CompactionConfig(keep_recent_turns=5)
+    small = [_image_user("only"), _assistant("a")]
+    out, res = await Compactor().compact(small, 0.65, cfg)
+    assert out == small and res.changed() is False      # nothing old to compact
+    big = [_image_user("first"), _assistant("a0")] + \
+          [_image_user(f"u{i}") for i in range(3)] + [_assistant("x")] * 9
+    once, _ = await Compactor().compact(big, 0.65, cfg)
+    twice, res2 = await Compactor().compact(once, 0.65, cfg)
+    assert twice == once and res2.removed_images == 0   # idempotent

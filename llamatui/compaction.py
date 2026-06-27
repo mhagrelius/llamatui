@@ -114,8 +114,57 @@ def _text_msg(role: str, text: str, *, compacted: bool = False) -> Message:
     return _mark_compacted(msg) if compacted else msg
 
 
+def _strip_images_from(msg: Message) -> tuple[Message, int]:
+    """Return (message with image parts replaced by one '[image removed]' text part, count removed).
+    Returns (msg, 0) unchanged when there are no images."""
+    images = [c for c in msg.contents if _is_image_content(c)]
+    if not images:
+        return msg, 0
+    non_image = [c for c in msg.contents if not _is_image_content(c)]
+    kept = [Content.from_text(text="[image removed]")] + non_image
+    return _rebuild(msg, contents=kept, mark=True), len(images)
+
+
 def overflow_recoverable(*, attempts: int, enabled: bool,
                          approvals_resolved: bool, exc: BaseException) -> bool:
     """Gate for reactive overflow recovery (ADR-0004): recover only on a fresh
     overflow, before any approval-gated action ran, once, and only when enabled."""
     return attempts == 0 and enabled and not approvals_resolved and is_context_overflow(exc)
+
+
+class Compactor:
+    """Graduated compaction over a Message list. Framework-free; the only
+    non-pure dependency is the injected async ``summarizer`` seam."""
+
+    def __init__(self, summarizer: Summarizer | None = None) -> None:
+        self._summarizer = summarizer
+
+    def should_compact(self, context_frac: float, cfg: CompactionConfig) -> bool:
+        return context_frac >= cfg.trigger
+
+    @staticmethod
+    def _recent_cut(messages: list[Message], keep: int) -> int:
+        return max(0, len(messages) - 2 * keep)
+
+    def _strip_old_images(
+        self, messages: list[Message], cfg: CompactionConfig
+    ) -> tuple[list[Message], int]:
+        cut = self._recent_cut(messages, cfg.keep_recent_turns)
+        if cut <= 1:
+            return messages, 0
+        removed = 0
+        out = list(messages)
+        for i in range(1, cut):                 # skip index 0 (first user msg)
+            if _is_compacted(out[i]):
+                continue
+            out[i], n = _strip_images_from(out[i])
+            removed += n
+        return out, removed
+
+    async def compact(
+        self, messages: list[Message], context_frac: float, cfg: CompactionConfig
+    ) -> tuple[list[Message], CompactionResult]:
+        result = CompactionResult()
+        messages, removed = self._strip_old_images(messages, cfg)
+        result.removed_images += removed
+        return messages, result
