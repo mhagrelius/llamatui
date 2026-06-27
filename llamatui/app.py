@@ -116,11 +116,11 @@ class LlamaTUI(App):
     BINDINGS = [
         Binding("ctrl+n", "new_chat", "New"),
         Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
-        Binding("ctrl+comma", "open_settings", "Settings"),
+        Binding("ctrl+o", "open_settings", "Settings"),
         Binding("ctrl+d", "delete_chat", "Delete"),
         Binding("ctrl+r", "dictate", "Dictate"),
-        Binding("ctrl+v", "paste_image", "Paste image"),
-        Binding("ctrl+shift+v", "clear_paste", "Clear paste"),
+        Binding("ctrl+g", "paste_image", "Grab image"),
+        Binding("ctrl+shift+g", "clear_paste", "Clear image"),
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
