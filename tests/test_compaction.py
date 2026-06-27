@@ -138,3 +138,46 @@ async def test_level1_idempotent_and_no_op_when_small():
     once, _ = await Compactor().compact(big, 0.65, cfg)
     twice, res2 = await Compactor().compact(once, 0.65, cfg)
     assert twice == once and res2.removed_images == 0   # idempotent
+
+
+def _long_history(n_old_turns, keep=2):
+    msgs = [_user("FIRST QUESTION")]
+    # first turn's answer
+    msgs.append(_assistant("first answer"))
+    for i in range(n_old_turns):
+        msgs.append(_user(f"old question {i}"))
+        msgs.append(_assistant(f"old answer {i}"))
+    # recent window: `keep` turns
+    for j in range(keep):
+        msgs.append(_user(f"recent q {j}"))
+        msgs.append(_assistant(f"recent a {j}"))
+    return msgs
+
+
+@pytest.mark.asyncio
+async def test_level2_heuristic_folds_into_single_summary():
+    cfg = CompactionConfig(keep_recent_turns=2, use_llm_summary=False)
+    msgs = _long_history(4, keep=2)              # 1 first turn + 4 old + 2 recent
+    out, res = await Compactor().compact(msgs, 0.80, cfg)   # >= summarize_threshold
+    assert out[0] is msgs[0] or _extract_text(out[0]) == "FIRST QUESTION"
+    assert _is_compacted(out[1])                  # the rolling summary
+    summary_text = _extract_text(out[1])
+    assert "old question 0" in summary_text and "old answer 3" in summary_text
+    assert "first answer" in summary_text          # leading orphan answer retained, not dropped
+    assert res.summarized_turns == 4
+    # recent window intact at the tail
+    assert _extract_text(out[-1]) == "recent a 1"
+    assert _extract_text(out[-2]) == "recent q 1"
+
+
+@pytest.mark.asyncio
+async def test_level2_rolls_existing_summary_forward():
+    cfg = CompactionConfig(keep_recent_turns=2, use_llm_summary=False)
+    out1, _ = await Compactor().compact(_long_history(4, keep=2), 0.80, cfg)
+    # Append two more turns so one more old turn ages past the window, recompact:
+    rolled = list(out1) + [_user("newer q"), _assistant("newer a")]
+    out2, res2 = await Compactor().compact(rolled, 0.80, cfg)
+    # still exactly one summary artifact right after the first user msg
+    assert _is_compacted(out2[1])
+    assert sum(1 for m in out2 if _is_compacted(m) and m.role == "assistant") == 1
+    assert "old question 0" in _extract_text(out2[1])      # old content retained

@@ -163,10 +163,69 @@ class Compactor:
             removed += n
         return out, removed
 
+    def _aged_region(self, messages, cut):
+        """Return (start, end, existing_summary_text) for the foldable region [start, end)."""
+        if cut <= 1:
+            return 1, 1, ""
+        start, existing = 1, ""
+        if len(messages) > 1 and _is_compacted(messages[1]) and messages[1].role == "assistant":
+            existing = _extract_text(messages[1])
+            start = 2
+        return start, cut, existing
+
+    def _heuristic_summary(self, existing: str, region: list, cfg: CompactionConfig) -> tuple:
+        lines = [existing] if existing else []
+        turns = 0
+        i = 0
+        if region and region[0].role == "assistant":
+            # leading orphan answer (e.g. the first turn's reply, whose user is
+            # preserved separately at index 0) — keep it instead of dropping it.
+            lines.append(f"- (earlier reply): {_extract_text(region[0])[:cfg.summary_max_chars]}")
+            i = 1
+        while i < len(region):
+            msg = region[i]
+            if msg.role != "user":
+                i += 1
+                continue
+            user_line = _extract_text(msg).splitlines()[0] if _extract_text(msg) else ""
+            answer = ""
+            if i + 1 < len(region) and region[i + 1].role == "assistant":
+                answer = _extract_text(region[i + 1])
+                i += 2
+            else:
+                i += 1
+            lines.append(f"- {user_line[:80]}: {answer[:cfg.summary_max_chars]}")
+            turns += 1
+        return "\n".join(lines), turns
+
+    async def _fold_rolling_summary(self, messages, cfg):
+        cut = self._recent_cut(messages, cfg.keep_recent_turns)
+        start, end, existing = self._aged_region(messages, cut)
+        region = messages[start:end]
+        if not region:
+            return messages, 0
+        if cfg.use_llm_summary and self._summarizer is not None:
+            text, turns = await self._llm_summary(existing, region, cfg)
+        else:
+            text, turns = self._heuristic_summary(existing, region, cfg)
+        if turns == 0:
+            return messages, 0
+        summary = _text_msg("assistant", text, compacted=True)
+        out = messages[:1] + [summary] + messages[end:]
+        return out, turns
+
+    async def _llm_summary(self, existing, region, cfg):
+        return self._heuristic_summary(existing, region, cfg)
+
     async def compact(
         self, messages: list[Message], context_frac: float, cfg: CompactionConfig
     ) -> tuple[list[Message], CompactionResult]:
         result = CompactionResult()
+        before = len(messages)
         messages, removed = self._strip_old_images(messages, cfg)
         result.removed_images += removed
+        if context_frac >= cfg.summarize_threshold:
+            messages, turns = await self._fold_rolling_summary(messages, cfg)
+            result.summarized_turns += turns
+        result.dropped_messages += before - len(messages)
         return messages, result
