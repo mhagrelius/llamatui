@@ -267,8 +267,8 @@ class Compactor:
         the trailing user message into the rolling summary, reaching the progress floor.
 
         Floor layout: [first user (image-stripped)] [rolling summary] [last user (image-stripped)].
-        Any trailing assistant after the last user is folded into the summary too, so the
-        last output message is always a user message.
+        Any trailing assistant after the last user is dropped (harmless — the overflow path
+        always ends in a lone un-answered user message); the result ends at the last user message.
         """
         result = CompactionResult()
         before = len(messages)

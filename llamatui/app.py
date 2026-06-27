@@ -366,6 +366,7 @@ class LlamaTUI(App):
             self._summarizer_agent = build_agent(
                 base_url=self.config.url, model=self.config.model,
                 tools=None, temperature=0.2, max_tokens=160,
+                thinking_budget=0,
                 instructions=self.SUMMARIZER_SYSTEM,
             )
         return self._summarizer_agent
@@ -747,5 +748,5 @@ class LlamaTUI(App):
             return
         self._status("compacting…")
         res = await self.conversation.compact_now(self._compaction_config())
-        self._write_system(res.note() if res.changed() else "[dim](nothing to compact)[/]")
+        self._write_system(f"[dim]({res.note()})[/]" if res.changed() else "[dim](nothing to compact)[/]")
         self._status("ready")

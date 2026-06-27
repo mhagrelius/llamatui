@@ -38,7 +38,7 @@ class Conversation:
         self.system_prompt: str | None = None
         self.workspace: str | None = None
         self._messages: list = []  # user + assistant *answer* only — never reasoning
-        self._compactor = Compactor(summarizer)  # user + assistant *answer* only — never reasoning
+        self._compactor = Compactor(summarizer)
 
     # ---- lifecycle -------------------------------------------------------
     def new(self, system_prompt: str | None) -> None:
