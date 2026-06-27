@@ -101,7 +101,7 @@ compaction.py  (deep module — no Textual, no server, no Settings import)
   │     ├─ should_compact(frac, cfg) -> bool
   │     ├─ async compact(messages, frac, cfg) -> tuple[list[Message], CompactionResult]
   │     ├─ async compact_normal(messages, cfg) -> ...     # Levels 1+2, ignore threshold
-  │     └─ async compact_to_floor(messages, cfg) -> ...   # escalation: L1+L2+emergency+floor
+  │     └─ async compact_to_floor(messages, cfg) -> ...   # overflow: strip all images + fold to floor
   └─ is_context_overflow(exc) -> bool         # module-level, pure, testable
 ```
 
@@ -205,16 +205,23 @@ messages (a trailing lone user counts toward recency and is always kept).
   re-summarized pair-by-pair → one Summarizer call per compaction. (Accepted v1 limitation:
   summary-of-summary compounding over very long sessions — §14.)
 
-- **Level 3 / escalation — `compact_to_floor`** (the emergency band `frac >= cfg.emergency`,
-  and the whole overflow path). Escalate in order until the list fits or the floor is reached:
-  1. apply Levels 1 + 2;
-  2. **emergency truncation**: keep first user msg + rolling summary + last `keep_recent_turns`
-     turns; replace the middle with one `[N earlier turns compacted]` marked message;
-  3. **strip images from the recent window too**;
-  4. **shrink the kept window toward 1 turn**.
-  **Progress floor** = first user message (text only — its images may be stripped here) + the
+- **Level 3 / escalation — `compact_to_floor`** (the **reactive** overflow path only — *not*
+  the proactive path; see below). The model has already failed, so this goes maximally
+  aggressive in one deterministic shot rather than measuring fit (the Compactor has no
+  tokenizer): **strip every image** (including the first and recent), then fold everything
+  except the first user message and the trailing turn into the rolling summary. Result layout:
+  `[first user (image-stripped)] [rolling summary] [trailing turn (image-stripped)]`.
+  **Progress floor** = first user message (text only — its image is stripped here) + the
   current/last user message, all images stripped. The floor always fits a sane window, so the
-  session cannot permanently wedge (invariant 6).
+  session cannot permanently wedge (invariant 6). If even the floor overflows a pathologically
+  small window, the single retry fails and a clean error surfaces.
+
+  **The proactive path never reaches the floor.** `compact()` does Level 1 always and Level 2
+  from `summarize_threshold` up; reaching the emergency band (`frac >= cfg.emergency`) only
+  guarantees Level 2 is active — it does **not** strip recent images or drop to the floor,
+  because nuking an active session at 85% would be worse than letting the rare follow-on
+  overflow trigger reactive recovery. The floor is reserved for `compact_to_floor`
+  (overflow) and is reachable manually only by repeated pressure, never automatically.
 
 `compact_normal` = Levels 1+2 over everything beyond the recent window, ignoring the
 trigger threshold and **not** doing emergency truncation. This is what **manual** compaction
