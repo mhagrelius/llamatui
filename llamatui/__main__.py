@@ -30,6 +30,9 @@ def cli_overrides(args) -> dict:
         "max_tokens": args.max_tokens,
         "voice_mode": args.voice_mode,
         "default_workspace": args.workspace,
+        "compaction_enabled": False if args.no_compaction else None,
+        "keep_recent_turns": args.keep_recent_turns,
+        "llm_summary": False if args.no_llm_summary else None,
     }
 
 
@@ -66,6 +69,12 @@ def main() -> None:
                     help="disable the filesystem tools")
     ap.add_argument("--no-fetch", action="store_true",
                     help="disable the web page fetch tool (fetch_url)")
+    ap.add_argument("--no-compaction", action="store_true",
+                    help="disable automatic history compaction and overflow recovery")
+    ap.add_argument("--keep-recent-turns", type=int, default=None,
+                    help="turns never compacted (default 5)")
+    ap.add_argument("--no-llm-summary", action="store_true",
+                    help="use heuristic summaries instead of the local model")
     ap.add_argument("--no-vision", dest="vision", action="store_false",
                     help="disable image paste + OCR")
     ap.add_argument("--ocr-dpi", type=int, default=200,
