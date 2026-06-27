@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from agent_framework import Content, Message
@@ -183,8 +185,7 @@ async def test_level2_rolls_existing_summary_forward():
     assert "old question 0" in _extract_text(out2[1])      # old content retained
 
 
-def _count_user(msgs):
-    return sum(1 for m in msgs if m.role == "user")
+
 
 
 @pytest.mark.asyncio
@@ -223,3 +224,17 @@ async def test_level2_llm_falls_back_on_exception():
     out, res = await Compactor(boom).compact(_long_history(3, keep=2), 0.80, cfg)
     assert res.summarized_turns == 3
     assert "old answer 2" in _extract_text(out[1])
+
+
+@pytest.mark.asyncio
+async def test_level2_llm_falls_back_on_timeout():
+    async def slow(msgs):
+        await asyncio.sleep(0.05)
+        return "TOO LATE"
+
+    cfg = CompactionConfig(keep_recent_turns=2, use_llm_summary=True, summary_timeout_s=0.01)
+    out, res = await Compactor(slow).compact(_long_history(3, keep=2), 0.80, cfg)
+    # summarizer timed out → heuristic fallback, NOT the slow summarizer's output
+    assert "TOO LATE" not in _extract_text(out[1])
+    assert "old question 0" in _extract_text(out[1])
+    assert res.summarized_turns == 3
