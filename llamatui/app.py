@@ -309,7 +309,15 @@ class LlamaTUI(App):
             self.workspace = None
         else:
             from .filesystem import Workspace
-            self.workspace = Workspace(self._resolve_workspace())
+            ocr_engine = None
+            if self.config.vision:
+                from .rasterizer import PdfRasterizer
+                from .ocr import OcrEngine, HttpVisionClient
+                ocr_engine = OcrEngine(
+                    PdfRasterizer(dpi=self.config.ocr_dpi),
+                    HttpVisionClient(self.config.url, self.config.model),
+                )
+            self.workspace = Workspace(self._resolve_workspace(), ocr_engine=ocr_engine)
             # PIN the resolved root onto the conversation the first time we know it.
             # Precedence (conv > settings > config > cwd) means once pinned the root is stable
             # regardless of later Settings.default_workspace changes.

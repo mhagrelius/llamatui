@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import sys
+import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -246,7 +247,10 @@ class Workspace:
             return "OCR is unavailable (vision disabled or no OCR engine configured)."
         try:
             result = self._ocr_engine.ocr_pdf(target.read_bytes(), max_pages)
-        except Exception as e:  # surface a clean message; server/vision errors included
+        except urllib.error.HTTPError as e:
+            return ("OCR failed: the server rejected the image. Relaunch llama-server with "
+                    f"--mmproj, or disable vision (--no-vision). ({e.code})")
+        except Exception as e:
             return f"OCR failed: {e}"
         text = _FILE_ENVELOPE_TAG_RE.sub(lambda m: f"<{m.group(1)}file-contents", result.text)
         note = ""
