@@ -43,6 +43,35 @@ use these names in code, comments, and reviews rather than inventing new ones.
   usage + llama.cpp timings + wall-clock into one `TurnMetrics`; `format_oneline()` is its
   interface.
 
+- **Compaction** — the deep module (`compaction.py`) that bounds the agent-facing **Message**
+  list so a long [[Conversation]] keeps fitting the model's context window. It is **in-memory and
+  lossless on disk**: it rewrites only what `messages_for_agent()` returns, never the SQLite
+  transcript or the on-screen scrollback — so the model's view and the user's view deliberately
+  diverge, and a system note announces *what left the model's view*. Runs only at **turn
+  boundaries** (and the reactive overflow path), never mid-stream, so the cache-prefix discipline
+  holds. Key terms:
+  - **Recent window** — the last *N* turns, never compacted (the `keep_recent_turns` [[Settings]]
+    field). A *turn* here is one user+answer pair in history.
+  - **Rolling summary** — the single summary artifact kept just after the first user message. As
+    turns age past the recent window they are *folded into* it in one **Summarizer** call, so
+    summarized history is represented once, not re-summarized pair-by-pair. The **Summarizer** is
+    an *injectable seam* (a dedicated, tool-free, low-temperature agent — never the conversational
+    agent), mirroring the `Embedder`/recorder seams; with it off, a heuristic produces the same
+    single artifact. Folded turns are **untrusted DATA** (same framing as memory/web): the
+    summarizer cannot call tools.
+  - **Progress floor** — the minimum the emergency path may reduce to: the first user message + the
+    current user message, images stripped. Guarantees a session can never permanently wedge.
+  - **Overflow recovery** — the reactive path: a context-overflow error escalates compaction toward
+    the floor and retries once — but **only before any approval-gated action has run** that turn
+    (a retry would otherwise duplicate side effects, and could not address session-resident
+    tool-result bloat anyway).
+  - **Manual compaction** — a user-driven forced normal pass (`Ctrl+K` / `/compact`), available even
+    when automatic compaction is switched off.
+
+  The master switch is a [[Settings]] field, and **off means off**: neither proactive nor overflow
+  compaction touches history, and an overflow then surfaces as a plain error (manual compaction
+  stays available as the escape hatch).
+
 - **KnowledgeGraph** — the deep module (`graph.py`) that owns *everything about facts the
   assistant knows*: the *entities* (people/projects/preferences/…), *observations* (timestamped
   facts), and *relations* (typed edges) tables, plus the FTS5 keyword index, the embedding
