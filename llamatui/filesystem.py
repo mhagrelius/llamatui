@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Annotated
 
 from agent_framework import FunctionTool
-from llamatui.documents import extract_document
+from llamatui.documents import DocumentResult, extract_document
 
 
 CMD_OUTPUT_CAP = 10_000
@@ -164,11 +164,14 @@ def _default_trash():
 
 
 class Workspace:
-    def __init__(self, root, *, runner=None, trash=None, shell: str | None = None) -> None:
+    def __init__(self, root, *, runner=None, trash=None, shell: str | None = None,
+             ocr_engine=None, ocr_max_pages: int = 20) -> None:
         self.root = Path(root).resolve()
         self._runner = runner
         self._trash = trash
         self._shell = shell
+        self._ocr_engine = ocr_engine
+        self._ocr_max_pages = ocr_max_pages
         self.on_output = None
         self.cancel_event = None
 
@@ -214,12 +217,38 @@ class Workspace:
                 note = f"\n[truncated to {READ_CAP} chars]"
             rel = target.relative_to(self.root).as_posix()
             return f'<file_contents path="{rel}">\n{text}\n</file_contents>{note}'
-        if doc.status in ("needs_ocr", "failed"):
+        if doc.status == "needs_ocr":
+            return f"{doc.reason} — scanned/image-only PDF. Call ocr_document(\"{path}\") to transcribe it."
+        if doc.status == "failed":
             return doc.reason
         # not_a_document: fall through to the existing binary/text handling.
         if b"\x00" in raw[:4096]:
             return f"Binary file ({len(raw)} bytes); not shown."
         text = raw.decode("utf-8", errors="replace")
+        note = ""
+        if len(text) > READ_CAP:
+            text = text[:READ_CAP]
+            note = f"\n[truncated to {READ_CAP} chars]"
+        rel = target.relative_to(self.root).as_posix()
+        return f'<file_contents path="{rel}">\n{text}\n</file_contents>{note}'
+
+    def ocr_document(
+        self,
+        path: Annotated[str, "Workspace-relative scanned/image-only PDF to transcribe."],
+        max_pages: Annotated[int, "Maximum pages to OCR."] = 20,
+    ) -> str:
+        target = self._confined(path)
+        if target is None:
+            return OUTSIDE_MSG(self.root)
+        if not target.is_file():
+            return f"Not a file: {path}"
+        if self._ocr_engine is None:
+            return "OCR is unavailable (vision disabled or no OCR engine configured)."
+        try:
+            result = self._ocr_engine.ocr_pdf(target.read_bytes(), max_pages)
+        except Exception as e:  # surface a clean message; server/vision errors included
+            return f"OCR failed: {e}"
+        text = _FILE_ENVELOPE_TAG_RE.sub(lambda m: f"<{m.group(1)}file-contents", result.text)
         note = ""
         if len(text) > READ_CAP:
             text = text[:READ_CAP]
@@ -317,7 +346,7 @@ class Workspace:
         return f"{head}{res.output}{code}".strip() or f"{head}(no output){code}".strip()
 
     def build_tools(self) -> list[FunctionTool]:
-        return [
+        tools = [
             FunctionTool(func=self.list_dir, name="list_dir",
                          description="List entries in a workspace directory."),
             FunctionTool(func=self.read_file, name="read_file",
@@ -345,6 +374,15 @@ class Workspace:
                 approval_mode="always_require",
             ),
         ]
+        if self._ocr_engine is not None:
+            tools.append(FunctionTool(
+                func=self.ocr_document,
+                name="ocr_document",
+                description="Transcribe a scanned/image-only PDF to text via the vision model. "
+                            "Expensive: one vision call per page. max_pages defaults to 20.",
+                approval_mode="always_require",
+            ))
+        return tools
 
     # ---- mutation tool --------------------------------------------------
     def write_file(
