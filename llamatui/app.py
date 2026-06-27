@@ -48,6 +48,8 @@ from .turn_view import TurnView, metrics_blob
 from .voice import VoiceInput, keyboard_initial_delay_s
 from .whisper import WhisperServer
 from .widgets import AssistantTurn, PromptArea, StatusBar, UserTurn
+from .clipboard import PillowClipboard
+from .staging import PasteStaging
 
 HELP = """[b]commands[/b]
   [cyan]/new[/]              start a new conversation (also Ctrl+N)
@@ -88,7 +90,7 @@ class Config:
     def __init__(
         self, url, model, system, db_path=None, web=True, memory=True,
         voice=True, whisper_bin=None, whisper_model=None, whisper_url=None,
-        fs=True, workspace=None, fetch=True,
+        fs=True, workspace=None, fetch=True, vision=True,
     ):
         self.url = url
         self.model = model
@@ -103,6 +105,7 @@ class Config:
         self.fs = fs
         self.workspace = workspace
         self.fetch = fetch
+        self.vision = vision
 
 
 class LlamaTUI(App):
@@ -115,6 +118,8 @@ class LlamaTUI(App):
         Binding("ctrl+comma", "open_settings", "Settings"),
         Binding("ctrl+d", "delete_chat", "Delete"),
         Binding("ctrl+r", "dictate", "Dictate"),
+        Binding("ctrl+v", "paste_image", "Paste image"),
+        Binding("ctrl+shift+v", "clear_paste", "Clear paste"),
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
@@ -143,6 +148,8 @@ class LlamaTUI(App):
         self.dictation: Dictation | None = None
         self.voice: VoiceInput | None = None
         self.voice_enabled = False
+        self._clipboard = PillowClipboard()
+        self._staging = PasteStaging()
 
     # ---- setup -----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -390,12 +397,13 @@ class LlamaTUI(App):
             self._write_system(f"[red]unknown command:[/] {cmd}  —  try [cyan]/help[/]")
 
     async def _send(self, text: str) -> None:
+        attachments = self._staging.take()
         await self.transcript.mount(UserTurn(text))
-        self.conversation.append_user(text)
+        self.conversation.append_user(text, attachments)
         turn = AssistantTurn(show_thinking=self.settings.show_thinking)
         await self.transcript.mount(turn)
         self.transcript.scroll_end(animate=False)
-        self.generate(turn, text)
+        self.generate(turn, text, attachments)
 
     # ---- streaming worker (adapter over TurnStream + TurnView) -----------
     def _on_turn_status(self, phase: str, rate: float) -> None:
@@ -411,7 +419,7 @@ class LlamaTUI(App):
         self.transcript.scroll_end(animate=False)
 
     @work(exclusive=True, group="gen")
-    async def generate(self, turn: AssistantTurn, user_text: str) -> None:
+    async def generate(self, turn: AssistantTurn, user_text: str, attachments: list | None = None) -> None:
         self._busy = True
         self._approve_all = False
         self._running_command = False
@@ -470,7 +478,9 @@ class LlamaTUI(App):
             answer=strip_tool_noise(st.answer),
             reasoning=st.reasoning or None,
             metrics=metrics_blob(metrics_line),
+            user_attachments=attachments,
         )
+        self._render_paste_chips()
         self._refresh_sidebar()
 
         ctx = ""
@@ -630,3 +640,21 @@ class LlamaTUI(App):
     def action_toggle_sidebar(self) -> None:
         sidebar = self.query_one("#sidebar")
         sidebar.display = not sidebar.display
+
+    def _render_paste_chips(self) -> None:
+        chips = self._staging.chips()
+        if chips:
+            self._write_system("Staged: " + " · ".join(chips))
+
+    def action_paste_image(self) -> None:
+        if not self.config.vision:
+            self._write_system("vision is off (--no-vision)")
+            return
+        grab = self._clipboard.grab(max_edge=1568)
+        msg = self._staging.add(grab)
+        self._write_system(msg)
+        self._render_paste_chips()
+
+    def action_clear_paste(self) -> None:
+        self._staging.clear()
+        self._render_paste_chips()
