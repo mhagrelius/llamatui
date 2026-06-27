@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import io
 from dataclasses import dataclass, field
 
-from PIL import Image
 from agent_framework import Content
 
 
@@ -35,6 +33,8 @@ UNTRUSTED_IMAGE_PREAMBLE = (
 
 def prepare_image(data: bytes, *, max_edge: int = 1568, source: str = "clipboard") -> ImageAttachment:
     """Decode, downscale (never upscale) so the longer edge <= max_edge, re-encode PNG."""
+    import io
+    from PIL import Image
     img = Image.open(io.BytesIO(data))
     img = img.convert("RGB") if img.mode not in ("RGB", "L") else img
     longest = max(img.size)

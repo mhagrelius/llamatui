@@ -311,12 +311,15 @@ class LlamaTUI(App):
             from .filesystem import Workspace
             ocr_engine = None
             if self.config.vision:
-                from .rasterizer import PdfRasterizer
-                from .ocr import OcrEngine, HttpVisionClient
-                ocr_engine = OcrEngine(
-                    PdfRasterizer(dpi=self.config.ocr_dpi),
-                    HttpVisionClient(self.config.url, self.config.model),
-                )
+                try:
+                    from .rasterizer import PdfRasterizer
+                    from .ocr import OcrEngine, HttpVisionClient
+                    ocr_engine = OcrEngine(
+                        PdfRasterizer(dpi=self.config.ocr_dpi),
+                        HttpVisionClient(self.config.url, self.config.model),
+                    )
+                except ModuleNotFoundError:
+                    ocr_engine = None
             self.workspace = Workspace(self._resolve_workspace(), ocr_engine=ocr_engine)
             # PIN the resolved root onto the conversation the first time we know it.
             # Precedence (conv > settings > config > cwd) means once pinned the root is stable

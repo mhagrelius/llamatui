@@ -5,8 +5,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
-from PIL import Image
-
 from .images import ImageAttachment, prepare_image
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff"}
@@ -22,6 +20,8 @@ def grab_from(raw, *, max_edge: int, read_file: Callable[[str], bytes]) -> Clipb
     """Normalize a clipboard payload (PIL image | list-of-paths | None) into a grab."""
     if raw is None:
         return ClipboardGrab()
+    from PIL import Image
+    import io
     if isinstance(raw, Image.Image):
         buf = io.BytesIO(); raw.save(buf, format="PNG")
         return ClipboardGrab([prepare_image(buf.getvalue(), max_edge=max_edge)])

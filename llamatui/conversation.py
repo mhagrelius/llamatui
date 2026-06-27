@@ -65,11 +65,14 @@ class Conversation:
             atts = []
             if r["role"] == "user":
                 for img in self._store.get_images(r["id"]):
-                    atts.append(ImageAttachment(
-                        data=self._store.image_bytes(img["sha256"]),
-                        media_type=img["media_type"],
-                        source=img["source"] or "stored",
-                    ))
+                    try:
+                        atts.append(ImageAttachment(
+                            data=self._store.image_bytes(img["sha256"]),
+                            media_type=img["media_type"],
+                            source=img["source"] or "stored",
+                        ))
+                    except (FileNotFoundError, OSError):
+                        continue
             msgs.append(make_message(r["role"], r["content"], atts or None))
         self._messages = msgs
         return rows

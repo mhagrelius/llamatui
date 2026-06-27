@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import io
-
-from PIL import Image
-
 from .clipboard import ClipboardGrab
 from .images import ImageAttachment
 
@@ -28,6 +24,8 @@ class PasteStaging:
         return "; ".join(notes)
 
     def chips(self) -> list[str]:
+        import io
+        from PIL import Image
         out = []
         for a in self._atts:
             w, h = Image.open(io.BytesIO(a.data)).size
