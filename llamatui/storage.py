@@ -74,7 +74,7 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
 
 
 class Store:
-    """Conversations and messages only. Takes the shared connection from :func:`connect`."""
+    """Conversations, messages, and message images. Takes the shared connection from :func:`connect`."""
 
     def __init__(self, conn, *, images_dir=None) -> None:
         self.db = conn
