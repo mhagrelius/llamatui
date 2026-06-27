@@ -63,9 +63,9 @@ class Conversation:
         return rows
 
     # ---- mutation --------------------------------------------------------
-    def append_user(self, text: str) -> None:
-        """Add the user's message to the in-memory history (not yet persisted)."""
-        self._messages.append(make_message("user", text))
+    def append_user(self, text: str, attachments: list | None = None) -> None:
+        """Add the user's message (optionally with images) to in-memory history."""
+        self._messages.append(make_message("user", text, attachments))
 
     def undo_last_user(self) -> None:
         """Drop a trailing un-answered user message (turn cancelled or errored)."""

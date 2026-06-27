@@ -3,7 +3,13 @@
 Everything here runs against a throwaway SQLite file — no Textual, no server.
 """
 
+import io
+
+from PIL import Image
+
+from llamatui.client import make_message
 from llamatui.conversation import Conversation
+from llamatui.images import prepare_image
 from llamatui.storage import Store, connect
 
 
@@ -128,3 +134,21 @@ def test_workspace_persists_through_reload_despite_changed_settings(tmp_path):
         f"Expected pinned workspace {workspace_a!r} to beat settings default {workspace_b!r}; "
         f"got {resolved!r}"
     )
+
+
+def _png():
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 40), (1, 2, 3)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_make_message_text_only_single_part():
+    msg = make_message("user", "hi")
+    assert len(msg.contents) == 1
+
+
+def test_make_message_with_attachment_has_image_part():
+    att = prepare_image(_png())
+    msg = make_message("user", "look", [att])
+    # text + framing + image
+    assert len(msg.contents) == 3

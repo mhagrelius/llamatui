@@ -54,9 +54,12 @@ class ReasoningChatClient(OpenAIChatCompletionClient):
         return update
 
 
-def make_message(role: str, text: str) -> Message:
-    """Build a chat Message of ``role`` carrying a single text part."""
-    return Message(role=role, contents=[Content.from_text(text=text)])
+def make_message(role: str, text: str, attachments: list | None = None) -> Message:
+    """Build a chat Message of ``role``: a text part, plus image parts when given."""
+    if not attachments:
+        return Message(role=role, contents=[Content.from_text(text=text)])
+    from llamatui.images import to_content_parts
+    return Message(role=role, contents=to_content_parts(text, attachments))
 
 
 def build_agent(
