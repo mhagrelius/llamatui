@@ -130,7 +130,7 @@ from llamatui.settings import parse_form
 
 
 def _raw(**over):
-    base = {"thinking_budget": "8192", "temperature": "0.7", "top_p": "", "max_tokens": "32000"}
+    base = {"thinking_budget": "8192", "temperature": "0.7", "top_p": "", "max_tokens": "32000", "keep_recent_turns": "5"}
     base.update(over)
     return base
 
@@ -183,7 +183,7 @@ def test_parse_form_preserves_default_workspace(tmp_path):
     from llamatui.settings import parse_form, Settings
     base = Settings(default_workspace="C:/proj")
     out, errors = parse_form(
-        {"thinking_budget": "10", "temperature": "0.7", "top_p": "", "max_tokens": "100"}, base
+        {"thinking_budget": "10", "temperature": "0.7", "top_p": "", "max_tokens": "100", "keep_recent_turns": "5"}, base
     )
     assert errors == {} and out.default_workspace == "C:/proj"
 

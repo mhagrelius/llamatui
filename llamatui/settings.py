@@ -136,7 +136,7 @@ def changed_fields(old: Settings, new: Settings) -> dict:
 
 
 def parse_form(raw: dict, base: Settings) -> "tuple[Settings | None, dict]":
-    """Validate the panel's four numeric text inputs. Returns (settings, {}) on success or
+    """Validate the panel's five numeric text inputs. Returns (settings, {}) on success or
     (None, {field: message}) on error. `base` supplies voice_mode / show_thinking, already typed
     by their RadioSet / Switch controls."""
     errors: dict = {}
@@ -171,8 +171,7 @@ def parse_form(raw: dict, base: Settings) -> "tuple[Settings | None, dict]":
     temperature = _float("temperature", 0.0, 2.0)
     top_p = _float("top_p", 0.0, 1.0, allow_blank=True)
     max_tokens = _int("max_tokens", lo=1)
-    _krt_text = str(raw.get("keep_recent_turns", "")).strip()
-    keep_recent_turns = _int("keep_recent_turns", lo=1) if _krt_text else base.keep_recent_turns
+    keep_recent_turns = _int("keep_recent_turns", lo=1)
 
     if errors:
         return None, errors
