@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import urllib.request
+from dataclasses import dataclass
 from typing import Protocol
 
 OCR_SYSTEM = (
@@ -53,3 +54,29 @@ class HttpVisionClient:
         with urllib.request.urlopen(req) as resp:
             data = json.loads(resp.read())
         return data["choices"][0]["message"]["content"]
+
+
+@dataclass
+class OcrResult:
+    text: str
+    pages_done: int
+    pages_total: int
+    truncated: bool
+
+
+class OcrEngine:
+    def __init__(self, rasterizer, vision_client):
+        self._rasterizer = rasterizer
+        self._vision = vision_client
+
+    def ocr_pdf(self, pdf_bytes: bytes, max_pages: int) -> OcrResult:
+        total = self._rasterizer.page_count(pdf_bytes)
+        pages = self._rasterizer.rasterize(pdf_bytes, max_pages)
+        chunks = []
+        for i, png in enumerate(pages, start=1):
+            chunks.append(f"=== Page {i} ===\n{self._vision.ocr_page(png)}")
+        truncated = total > len(pages)
+        if truncated:
+            chunks.append(f"[OCR stopped at page {len(pages)} of {total}]")
+        return OcrResult(text="\n\n".join(chunks), pages_done=len(pages),
+                         pages_total=total, truncated=truncated)
