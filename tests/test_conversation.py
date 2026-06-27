@@ -172,3 +172,49 @@ def test_user_images_persist_and_rehydrate(tmp_path):
     reopened.load(conv.id)
     user_msg = reopened.messages_for_agent()[0]
     assert len(user_msg.contents) == 3   # text + framing + image
+
+
+from llamatui.compaction import CompactionConfig
+
+
+async def test_compact_if_needed_below_threshold_noop(tmp_path):
+    conv = Conversation(_store(tmp_path), model="m")
+    conv.append_user("hi")
+    res = await conv.compact_if_needed(0.10, CompactionConfig())
+    assert res is None
+    assert len(conv.messages_for_agent()) == 1
+
+
+async def test_compact_if_needed_disabled_noop(tmp_path):
+    conv = Conversation(_store(tmp_path), model="m")
+    for i in range(20):
+        conv._messages.append(make_message("user", f"q{i}"))
+        conv._messages.append(make_message("assistant", f"a{i}"))
+    res = await conv.compact_if_needed(0.95, CompactionConfig(enabled=False))
+    assert res is None
+
+
+async def test_compact_now_summarizes_regardless_of_toggle(tmp_path):
+    conv = Conversation(_store(tmp_path), model="m")
+    conv._messages.append(make_message("user", "FIRST"))
+    for i in range(8):
+        conv._messages.append(make_message("user", f"q{i}"))
+        conv._messages.append(make_message("assistant", f"a{i}"))
+    res = await conv.compact_now(CompactionConfig(keep_recent_turns=2, use_llm_summary=False, enabled=False))
+    assert res.changed()
+    assert len(conv.messages_for_agent()) < 17
+
+
+async def test_compact_for_overflow_reaches_floor(tmp_path):
+    conv = Conversation(_store(tmp_path), model="m")
+    conv._messages.append(make_message("user", "FIRST"))
+    for i in range(10):
+        conv._messages.append(make_message("user", f"q{i}"))
+        conv._messages.append(make_message("assistant", f"a{i}"))
+    conv._messages.append(make_message("user", "current"))
+    res = await conv.compact_for_overflow(CompactionConfig(keep_recent_turns=2, use_llm_summary=False))
+    msgs = conv.messages_for_agent()
+    from llamatui.compaction import _extract_text
+    assert _extract_text(msgs[0]) == "FIRST"
+    assert _extract_text(msgs[-1]) == "current"
+    assert res.changed()

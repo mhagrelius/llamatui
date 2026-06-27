@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from .client import make_message
 from .images import ImageAttachment
+from .compaction import Compactor, CompactionConfig, CompactionResult, Summarizer
 from .storage import Store
 
 
@@ -28,7 +29,8 @@ def _title_from(user_text: str) -> str:
 class Conversation:
     """Owns the agent-facing message list and its persistence together."""
 
-    def __init__(self, store: Store, *, model: str | None = None) -> None:
+    def __init__(self, store: Store, *, model: str | None = None,
+                 summarizer: "Summarizer | None" = None) -> None:
         self._store = store
         self.model = model
         self.id: int | None = None
@@ -36,6 +38,7 @@ class Conversation:
         self.system_prompt: str | None = None
         self.workspace: str | None = None
         self._messages: list = []  # user + assistant *answer* only — never reasoning
+        self._compactor = Compactor(summarizer)  # user + assistant *answer* only — never reasoning
 
     # ---- lifecycle -------------------------------------------------------
     def new(self, system_prompt: str | None) -> None:
@@ -116,6 +119,23 @@ class Conversation:
     def messages_for_agent(self) -> list:
         """The message list to hand to ``agent.run``."""
         return self._messages
+
+    async def compact_if_needed(self, context_frac: float, cfg: CompactionConfig) -> "CompactionResult | None":
+        """Compact in-memory history if enabled and over the trigger threshold."""
+        if not (cfg.enabled and self._compactor.should_compact(context_frac, cfg)):
+            return None
+        self._messages, res = await self._compactor.compact(self._messages, context_frac, cfg)
+        return res if res.changed() else None
+
+    async def compact_now(self, cfg: CompactionConfig) -> CompactionResult:
+        """User-driven forced normal pass — runs regardless of cfg.enabled."""
+        self._messages, res = await self._compactor.compact_normal(self._messages, cfg)
+        return res
+
+    async def compact_for_overflow(self, cfg: CompactionConfig) -> CompactionResult:
+        """Reactive escalation toward the progress floor."""
+        self._messages, res = await self._compactor.compact_to_floor(self._messages, cfg)
+        return res
 
     @property
     def is_saved(self) -> bool:
