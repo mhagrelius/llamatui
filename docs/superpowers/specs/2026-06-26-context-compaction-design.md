@@ -391,6 +391,12 @@ async def action_compact_now(self) -> None:
     self._status("ready", connected=True)
 ```
 
+Key choice caveat: `ctrl+k` is free in `BINDINGS` and not a Windows-Terminal-reserved key
+(the recent reserved-key cleanup moved off `ctrl+comma`/`ctrl+v`, not this), but `ctrl+k` is
+a common "kill-to-end-of-line" in text inputs — confirm the focused `PromptArea` doesn't
+swallow it during implementation; fall back to another free key (e.g. `ctrl+shift+k`) if it
+does. `/compact` works regardless of focus.
+
 `_handle_command` gains `/compact`: if trailing args are present, **reject with a hint**
 ("`/compact` takes no arguments; guided summarization isn't supported yet"); otherwise call
 `action_compact_now()`. Manual compaction runs a forced **normal pass** and works **regardless
