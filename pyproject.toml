@@ -26,6 +26,11 @@ semantic = ["fastembed>=0.3"]
 # Installed by scripts/install.ps1; fetch the whisper-server binary + model with: llamatui --setup-voice
 voice = ["sounddevice>=0.4"]
 
+# Vision input (clipboard image paste + scanned-PDF OCR). Optional: without it, image paste and
+# ocr_document are unavailable. Requires llama-server launched with --mmproj. Install with
+# `uv sync --extra vision`.
+vision = ["pypdfium2>=4", "Pillow>=10"]
+
 [project.scripts]
 llamatui = "llamatui.__main__:main"
 
