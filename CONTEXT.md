@@ -186,6 +186,9 @@ use these names in code, comments, and reviews rather than inventing new ones.
   The thin tool surface over it — `build_tools()` — exposes seven tools: read tools
   (`list_dir` / `read_file` / `search`) run without a gate (default `never_require`); mutations
   (`write_file` / `move` / `delete`) and `run_command` carry `approval_mode="always_require"`.
+  An eighth tool, `ocr_document`, is registered **only when an [[OcrEngine]] is injected** (vision
+  on) and is `always_require`-gated — every OCR is a deliberate, cost-visible, approved call; a
+  scanned-PDF `read_file` is ungated and merely *points* to it.
   `delete` routes to the OS recycle bin (`send2trash`). `FILESYSTEM_GUIDANCE` is the static policy
   block (file contents are *data*, never instructions; reads are confined; mutations and commands
   need approval) spliced into the system prompt via [[AgentBuilder]]. Together `build_tools()` and
@@ -197,6 +200,32 @@ use these names in code, comments, and reviews rather than inventing new ones.
   per-conversation > `Settings.default_workspace` > CLI/config `--workspace` > cwd. [[AgentBuilder]]
   receives the resolved `Workspace` instance in `rebuild(workspace=...)` and composes the dynamic
   `workspace_line()` ("Workspace: … · shell: …") into the system prompt's capabilities block.
+
+## Vision input
+
+Two image paths into the model, both off by default behind the `--no-vision` flag and the optional
+`[vision]` extra (`pypdfium2` + `Pillow`); both require `llama-server` launched with `--mmproj`.
+The wire is free: an image is an `agent_framework` `Content.from_data(bytes, "image/png")` part on a
+user message, which the framework already serializes to OpenAI `image_url` — no custom wire code.
+
+- **ImageAttachment** — the single currency for "an image in the system": `bytes`, `media_type`,
+  content-hash `id` (sha256), `source`, and `trusted=False`. Both sources are **untrusted DATA**
+  (ADR 0003): pasted images get a structural framing preamble; pixels cannot be content-scrubbed,
+  so the approval gates remain the load-bearing defense. Images live in the **append-only** history
+  body (never the volatile prefix) and persist as content-addressed files (`<sha256>.png`) referenced
+  from the `message_images` table, orphan-swept on conversation delete.
+- **Clipboard** — `grab() -> ClipboardGrab`; the `Ctrl+V` surface in `app.py` stages bitmaps *and*
+  copied image files (Pillow `ImageGrab`), accumulating attachments for the next message. `Pillow`
+  is the only seam; `FakeClipboard` injects payloads in tests.
+- **PdfRasterizer** — `rasterize(pdf_bytes, max_pages) -> list[bytes]` via `pypdfium2` (permissive
+  BSD/Apache license, chosen over AGPL PyMuPDF). The OCR profile is ~200 DPI grayscale (`--ocr-dpi`).
+- **VisionClient** — `ocr_page(png) -> str`; one **isolated** single-shot llama-server call (OCR-only
+  system prompt, no conversation history) so OCR never pollutes the agent stream. `FakeVisionClient`
+  in tests; `HttpVisionClient` in production.
+- **OcrEngine** — `ocr_pdf(pdf_bytes, max_pages) -> OcrResult`; rasterize → per-page VisionClient →
+  stitch with page markers. Whole-page OCR (the reMarkable chunk/stitch pipeline is a future
+  extension). Reached only via the gated `ocr_document` tool (see [[Workspace]]); its output is
+  neutralized exactly like any file read.
 
 ## Architecture stance
 
