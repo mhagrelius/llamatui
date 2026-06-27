@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import paths
+from .images import sha256_id
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
@@ -38,6 +39,15 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at      TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, id);
+CREATE TABLE IF NOT EXISTS message_images (
+    id         INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    ordinal    INTEGER NOT NULL,
+    media_type TEXT    NOT NULL,
+    sha256     TEXT    NOT NULL,
+    source     TEXT,
+    created_at TEXT    NOT NULL
+);
 """
 
 
@@ -66,13 +76,22 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
 class Store:
     """Conversations and messages only. Takes the shared connection from :func:`connect`."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn, *, images_dir=None) -> None:
         self.db = conn
         self.db.executescript(SCHEMA)
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(conversations)")}
         if "workspace" not in cols:
             self.db.execute("ALTER TABLE conversations ADD COLUMN workspace TEXT")
         self.db.commit()
+        if images_dir is not None:
+            self._images_dir = Path(images_dir)
+        else:
+            row = self.db.execute("PRAGMA database_list").fetchone()
+            db_file = row[2] if row else ""
+            if db_file:
+                self._images_dir = Path(db_file).parent / "images"
+            else:
+                self._images_dir = default_db_path().parent / "images"
 
     def close(self) -> None:
         self.db.close()
@@ -111,8 +130,48 @@ class Store:
         self.db.commit()
 
     def delete_conversation(self, conv_id: int) -> None:
+        shas = {
+            r["sha256"]
+            for r in self.db.execute(
+                "SELECT DISTINCT mi.sha256 FROM message_images mi"
+                " JOIN messages m ON m.id = mi.message_id WHERE m.conversation_id = ?",
+                (conv_id,),
+            ).fetchall()
+        }
         self.db.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
         self.db.commit()
+        self._sweep_orphan_images(shas)
+
+    def add_image(self, message_id: int, ordinal: int, media_type: str, data: bytes, source: str) -> None:
+        sha = sha256_id(data)
+        self._images_dir.mkdir(parents=True, exist_ok=True)
+        path = self._images_dir / f"{sha}.png"
+        if not path.exists():
+            path.write_bytes(data)
+        self.db.execute(
+            "INSERT INTO message_images (message_id, ordinal, media_type, sha256, source, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (message_id, ordinal, media_type, sha, source, _now()),
+        )
+        self.db.commit()
+
+    def get_images(self, message_id: int) -> list[sqlite3.Row]:
+        return self.db.execute(
+            "SELECT ordinal, media_type, sha256, source FROM message_images"
+            " WHERE message_id = ? ORDER BY ordinal",
+            (message_id,),
+        ).fetchall()
+
+    def image_bytes(self, sha: str) -> bytes:
+        return (self._images_dir / f"{sha}.png").read_bytes()
+
+    def _sweep_orphan_images(self, shas: set[str]) -> None:
+        for sha in shas:
+            still = self.db.execute(
+                "SELECT 1 FROM message_images WHERE sha256 = ? LIMIT 1", (sha,)
+            ).fetchone()
+            if not still:
+                (self._images_dir / f"{sha}.png").unlink(missing_ok=True)
 
     # ---- messages --------------------------------------------------------
     def add_message(
@@ -133,7 +192,7 @@ class Store:
 
     def get_messages(self, conv_id: int) -> list[sqlite3.Row]:
         return self.db.execute(
-            "SELECT role, content, reasoning, metrics FROM messages"
+            "SELECT id, role, content, reasoning, metrics FROM messages"
             " WHERE conversation_id = ? ORDER BY id",
             (conv_id,),
         ).fetchall()
