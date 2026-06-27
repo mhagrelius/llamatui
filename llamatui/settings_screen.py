@@ -42,6 +42,14 @@ class SettingsScreen(ModalScreen["Settings | None"]):
                 yield Switch(value=s.show_thinking, id="show_thinking")
             yield Label("Default workspace  (path, blank = none)")
             yield Input(value=s.default_workspace or "", id="default_workspace")
+            yield Label("Keep recent turns  (never compacted)")
+            yield Input(value=str(s.keep_recent_turns), id="keep_recent_turns")
+            with Horizontal(id="compaction-enabled-row"):
+                yield Label("Auto-compaction")
+                yield Switch(value=s.compaction_enabled, id="compaction_enabled")
+            with Horizontal(id="llm-summary-row"):
+                yield Label("LLM summarization")
+                yield Switch(value=s.llm_summary, id="llm_summary")
             yield Static("", id="settings-error")
             with Horizontal(id="settings-buttons"):
                 yield Button("Save", variant="primary", id="save")
@@ -59,13 +67,19 @@ class SettingsScreen(ModalScreen["Settings | None"]):
             "temperature": self.query_one("#temperature", Input).value,
             "top_p": self.query_one("#top_p", Input).value,
             "max_tokens": self.query_one("#max_tokens", Input).value,
+            "keep_recent_turns": self.query_one("#keep_recent_turns", Input).value,
         }
         radio = self.query_one("#voice_mode", RadioSet)
         voice = VoiceMode.HOLD if radio.pressed_index == 1 else VoiceMode.TOGGLE
         show = self.query_one("#show_thinking", Switch).value
         ws_raw = self.query_one("#default_workspace", Input).value.strip()
         workspace = ws_raw if ws_raw else None
-        base = replace(self._current, voice_mode=voice, show_thinking=show, default_workspace=workspace)
+        comp_enabled = self.query_one("#compaction_enabled", Switch).value
+        llm_summary = self.query_one("#llm_summary", Switch).value
+        base = replace(
+            self._current, voice_mode=voice, show_thinking=show, default_workspace=workspace,
+            compaction_enabled=comp_enabled, llm_summary=llm_summary,
+        )
         result, errors = parse_form(raw, base)
         if errors:
             message = "   ".join(f"{name}: {msg}" for name, msg in errors.items())
