@@ -238,3 +238,37 @@ async def test_level2_llm_falls_back_on_timeout():
     assert "TOO LATE" not in _extract_text(out[1])
     assert "old question 0" in _extract_text(out[1])
     assert res.summarized_turns == 3
+
+
+@pytest.mark.asyncio
+async def test_compact_normal_folds_regardless_of_frac():
+    cfg = CompactionConfig(keep_recent_turns=2, use_llm_summary=False)
+    out, res = await Compactor().compact_normal(_long_history(4, keep=2), cfg)
+    assert _is_compacted(out[1]) and res.summarized_turns == 4
+    assert _extract_text(out[-1]) == "recent a 1"   # recent window preserved
+
+
+@pytest.mark.asyncio
+async def test_compact_to_floor_strips_all_images_and_reaches_floor():
+    cfg = CompactionConfig(keep_recent_turns=2, use_llm_summary=False)
+    msgs = [_image_user("FIRST")]                    # first user msg WITH image
+    for i in range(4):
+        msgs += [_image_user(f"q{i}"), _assistant(f"a{i}")]
+    msgs.append(_image_user("current question"))     # trailing lone user (overflowed turn)
+    out, res = await Compactor().compact_to_floor(msgs, cfg)
+    assert _extract_text(out[0]) == "FIRST"
+    assert not any(_is_image_content(c) for m in out for c in m.contents)  # all images gone
+    assert _extract_text(out[-1]) == "current question"   # current user preserved
+    assert len(out) < len(msgs) and res.changed()
+    assert res.removed_images >= 5
+
+
+@pytest.mark.asyncio
+async def test_first_user_text_and_last_user_never_dropped_to_floor():
+    cfg = CompactionConfig(keep_recent_turns=5, use_llm_summary=False)
+    msgs = [_user("GROUND TRUTH")]
+    for i in range(20):
+        msgs += [_user(f"q{i}"), _assistant(f"a{i}")]
+    out, _ = await Compactor().compact_to_floor(msgs, cfg)
+    assert _extract_text(out[0]) == "GROUND TRUTH"
+    assert out[-1].role == "user"

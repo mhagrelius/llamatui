@@ -237,3 +237,60 @@ class Compactor:
             result.summarized_turns += turns
         result.dropped_messages += before - len(messages)
         return messages, result
+
+    def _strip_all_images(self, messages):
+        """Strip images from every message (including first and recent), reusing _strip_images_from."""
+        removed = 0
+        out = list(messages)
+        for i in range(len(out)):
+            out[i], n = _strip_images_from(out[i])
+            removed += n
+        return out, removed
+
+    async def compact_normal(
+        self, messages: list[Message], cfg: "CompactionConfig"
+    ) -> tuple[list[Message], "CompactionResult"]:
+        """Forced manual compaction: Level 1 + Level 2 unconditionally, ignoring thresholds."""
+        result = CompactionResult()
+        before = len(messages)
+        messages, removed = self._strip_old_images(messages, cfg)
+        result.removed_images += removed
+        messages, turns = await self._fold_rolling_summary(messages, cfg)
+        result.summarized_turns += turns
+        result.dropped_messages += before - len(messages)
+        return messages, result
+
+    async def compact_to_floor(
+        self, messages: list[Message], cfg: "CompactionConfig"
+    ) -> tuple[list[Message], "CompactionResult"]:
+        """Overflow escalation: strip all images, fold everything except first user msg and
+        the trailing user message into the rolling summary, reaching the progress floor.
+
+        Floor layout: [first user (image-stripped)] [rolling summary] [last user (image-stripped)].
+        Any trailing assistant after the last user is folded into the summary too, so the
+        last output message is always a user message.
+        """
+        result = CompactionResult()
+        before = len(messages)
+        if not messages:
+            return messages, result
+        messages, removed = self._strip_all_images(messages)
+        result.removed_images += removed
+        # index of the last user message (the current / just-failed turn)
+        lu = max((i for i, m in enumerate(messages) if m.role == "user"), default=0)
+        start = 2 if (len(messages) > 1 and _is_compacted(messages[1])
+                      and messages[1].role == "assistant") else 1
+        existing = _extract_text(messages[1]) if start == 2 else ""
+        # fold everything up to (but not including) the last user message
+        region = messages[start:lu]
+        if region:
+            if cfg.use_llm_summary and self._summarizer is not None:
+                text, turns = await self._llm_summary(existing, region, cfg)
+            else:
+                text, turns = self._heuristic_summary(existing, region, cfg)
+            summary = _text_msg("assistant", text, compacted=True)
+            # keep only the last user message as tail (lu:lu+1), not any trailing assistant
+            messages = messages[:1] + [summary] + messages[lu:lu + 1]
+            result.summarized_turns += turns
+        result.dropped_messages += before - len(messages)
+        return messages, result
