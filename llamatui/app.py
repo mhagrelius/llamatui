@@ -29,7 +29,7 @@ from . import paths
 from .agent_builder import AgentBuilder
 from .approval import ApprovalModal
 from .client import build_agent, detect_context_window, detect_model_id, humanize_model_name
-from .compaction import CompactionConfig
+from .compaction import CompactionConfig, overflow_recoverable
 from .conversation import Conversation
 from .dictation import Dictation, State, build_recorder
 from .graph import KnowledgeGraph, build_embedder
@@ -486,33 +486,51 @@ class LlamaTUI(App):
         # there is no `get_new_thread()`; the framework's per-run carrier is `create_session()`
         # returning an AgentSession (agent_framework/_agents.py:411, _sessions.py:746).
         session = self.agent.create_session()
-        pending = self.conversation.messages_for_agent()   # first segment: user + prior answers
+        pending = self.conversation.messages_for_agent()
+        attempts = 0
+        approvals_resolved = False
 
-        try:
-            while True:
-                stream_obj = self.agent.run(pending, session=session, stream=True)
-                async for update in stream_obj:
-                    stream.ingest(update)
-                    view.reflect(stream.state)
-                final = await stream_obj.get_final_response()
-                requests = list(final.user_input_requests)
-                if not requests:
-                    break
-                # Route the "awaiting approval" phase through TurnState so it flows through
-                # the normal status path (spec §H).
-                stream.state.phase = AWAITING
+        while True:                                   # retry loop (overflow recovery)
+            try:
+                while True:                           # approval loop
+                    stream_obj = self.agent.run(pending, session=session, stream=True)
+                    async for update in stream_obj:
+                        stream.ingest(update)
+                        view.reflect(stream.state)
+                    final = await stream_obj.get_final_response()
+                    requests = list(final.user_input_requests)
+                    if not requests:
+                        break
+                    # Route the "awaiting approval" phase through TurnState so it flows through
+                    # the normal status path (spec §H).
+                    stream.state.phase = AWAITING
+                    view.reflect(stream.state, force=True)
+                    responses = await self._resolve_approvals(requests, view)
+                    approvals_resolved = True
+                    # Resume on the SAME session (it holds the assistant function_call) + SAME agent
+                    # (KV prefix intact). Submit ONLY the approval responses.
+                    pending = [Message(role="user", contents=responses)]
+                break                                 # turn succeeded
+            except Exception as exc:
                 view.reflect(stream.state, force=True)
-                responses = await self._resolve_approvals(requests, view)
-                # Resume on the SAME session (it holds the assistant function_call) + SAME agent
-                # (KV prefix intact). Submit ONLY the approval responses.
-                pending = [Message(role="user", contents=responses)]
-        except Exception as exc:
-            view.reflect(stream.state, force=True)
-            view.error(exc)
-            self._status("error", connected=False)
-            self.conversation.undo_last_user()
-            self._busy = False
-            return
+                cfg = self._compaction_config()
+                if overflow_recoverable(attempts=attempts, enabled=cfg.enabled,
+                                        approvals_resolved=approvals_resolved, exc=exc):
+                    res = await self.conversation.compact_for_overflow(cfg)
+                    if res.changed():
+                        attempts += 1
+                        self._write_system(f"[dim](overflow recovered — {res.note()}, retrying…)[/]")
+                        self._status("recovering…", connected=True)
+                        session = self.agent.create_session()
+                        pending = self.conversation.messages_for_agent()
+                        stream = TurnStream()
+                        view = TurnView(turn, on_status=self._on_turn_status)
+                        continue
+                view.error(exc)
+                self._status("error", connected=False)
+                self.conversation.undo_last_user()
+                self._busy = False
+                return
 
         view.reflect(stream.state, force=True)
         st = stream.state
