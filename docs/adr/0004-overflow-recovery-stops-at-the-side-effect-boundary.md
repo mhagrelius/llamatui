@@ -27,3 +27,7 @@ does not remove.
   hatch is **manual compaction** (`Ctrl+K` / `/compact`), which is always available.
 - `generate()` must track an `approvals_resolved` flag and gate recovery on it; the retry is
   bounded to a single attempt.
+- The principled fix for the punted case (mid-turn overflow from a large tool result) is the
+  framework's native in-place `CompactionStrategy` on `agent.run`, which can shrink the
+  session-resident result without re-running the tool. Logged as a future item in the design
+  spec, not in v1 scope.

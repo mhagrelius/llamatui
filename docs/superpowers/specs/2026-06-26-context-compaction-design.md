@@ -508,10 +508,16 @@ via the unit tests above; verify the end-to-end paths manually (§12).
 
 - **A1 — overflow keyword heuristic.** May need per-backend tuning; false negatives just
   surface the original error (status quo), false positives cost one wasted compaction+retry.
-- **A2 — `additional_properties` round-trip.** Marker is read before send; confirm it isn't
-  serialized to the wire (or is harmlessly ignored) by `_prepare_message_for_openai`.
-- **A3 — `agent.run(stream=False)` return shape.** `_summarize_turns` reads `resp.messages[-1]`;
-  `try/except` degrades to heuristic if it differs. Verify during implementation.
+- **A2 — Message copy + marker (resolved).** `agent_framework.Message` has **no** `model_copy`
+  (not a dataclass/pydantic model); copies are made by constructing a fresh `Message(...)`
+  preserving `role`/`contents`/`author_name`/`message_id`/`additional_properties` (as
+  `client.py` does). The `compacted` marker lives in `additional_properties` (framework
+  metadata, not message content), read before send; residual caveat: confirm it isn't echoed
+  to the wire by `_prepare_message_for_openai` (harmless if it is).
+- **A3 — `agent.run(stream=False)` shape (resolved).** `run(..., stream=False)` returns an
+  `Awaitable[AgentResponse]`; `_summarize_turns` does `resp = await agent.run(...)` and reads
+  `resp.text` (there is no `.get_final_response()` / `.messages` on this path). `try/except`
+  still degrades to heuristic on any error.
 - **A4 — LLM summary latency.** On by default; one bounded (`summary_timeout_s`, small
   `max_tokens`) generation on the single local server during compaction, blocking `ready`
   briefly. Timeout → heuristic. Users can flip `llm_summary` off.
@@ -528,3 +534,11 @@ via the unit tests above; verify the end-to-end paths manually (§12).
   no longer see; needs a `_messages`↔widget correlation layer not tracked today.
 - **Separate image-retention leash** (`keep_recent_images`) decoupled from text retention.
 - **Configurable `trigger`/`emergency`** if users want to tune the bands.
+- **Native `CompactionStrategy` for mid-turn tool-result bloat.** `agent_framework` ships an
+  in-place `CompactionStrategy` protocol, and `run()` accepts `compaction_strategy=` +
+  `tokenizer=`. It operates *within a single run/session*, so it can't replace our cross-turn
+  `_messages` compaction (the session is discarded each turn) — but it is the principled fix
+  for the case ADR-0004 deliberately punts on: an overflow *after* a tool ran, caused by a huge
+  session-resident tool result that compacting `_messages` can't remove. Future: wire a
+  tokenizer and pass `compaction_strategy=` on the per-turn `agent.run` to shrink tool results
+  in place instead of erroring.

@@ -47,7 +47,8 @@
   - `@dataclass(frozen=True) CompactionConfig` with `enabled: bool=True`, `trigger: float=0.60`, `emergency: float=0.85`, `keep_recent_turns: int=5`, `use_llm_summary: bool=True`, `summary_max_chars: int=280`, `summary_timeout_s: float=30.0`, and property `summarize_threshold -> float`.
   - `@dataclass CompactionResult` with `dropped_messages: int=0`, `removed_images: int=0`, `summarized_turns: int=0`; methods `changed() -> bool`, `note() -> str`.
   - `is_context_overflow(exc: BaseException) -> bool`
-  - private helpers `_is_image_content(c) -> bool`, `_extract_text(msg) -> str`, `_mark_compacted(msg) -> Message`, `_is_compacted(msg) -> bool`, `_text_msg(role, text, *, compacted=False) -> Message`.
+  - `overflow_recoverable(*, attempts: int, enabled: bool, approvals_resolved: bool, exc: BaseException) -> bool` (ADR-0004 gate, used by `generate()` in Task 11)
+  - private helpers `_rebuild(msg, *, contents=None, mark=False) -> Message` (Message copy — there is **no** `model_copy`), `_is_image_content(c) -> bool`, `_extract_text(msg) -> str`, `_mark_compacted(msg) -> Message`, `_is_compacted(msg) -> bool`, `_text_msg(role, text, *, compacted=False) -> Message`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -60,6 +61,7 @@ from llamatui.compaction import (
     CompactionConfig,
     CompactionResult,
     is_context_overflow,
+    overflow_recoverable,
     _is_image_content,
     _extract_text,
     _mark_compacted,
@@ -124,6 +126,21 @@ def test_is_context_overflow_detects_keywords_and_cause():
 def test_is_context_overflow_ignores_unrelated():
     assert is_context_overflow(ConnectionError("network down")) is False
     assert is_context_overflow(TimeoutError("read timed out")) is False
+
+
+def test_overflow_recoverable_safety_properties():
+    of = Exception("context length exceeded")
+    # fresh overflow, enabled, no approvals → recover
+    assert overflow_recoverable(attempts=0, enabled=True, approvals_resolved=False, exc=of) is True
+    # ADR-0004: an approval already ran → never recover
+    assert overflow_recoverable(attempts=0, enabled=True, approvals_resolved=True, exc=of) is False
+    # already retried once → no second attempt
+    assert overflow_recoverable(attempts=1, enabled=True, approvals_resolved=False, exc=of) is False
+    # compaction disabled → no recovery
+    assert overflow_recoverable(attempts=0, enabled=False, approvals_resolved=False, exc=of) is False
+    # unrelated error → not an overflow
+    assert overflow_recoverable(attempts=0, enabled=True, approvals_resolved=False,
+                                exc=ConnectionError("down")) is False
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -221,10 +238,26 @@ def _extract_text(msg: Message) -> str:
     return ""
 
 
-def _mark_compacted(msg: Message) -> Message:
+def _rebuild(msg: Message, *, contents=None, mark: bool = False) -> Message:
+    """Copy a Message with optional new contents / compaction marker.
+
+    ``agent_framework.Message`` is not a dataclass/pydantic model and has no
+    ``model_copy`` — construct a fresh one, preserving identity fields (this is
+    the same fallback ``client.py`` uses)."""
     props = dict(msg.additional_properties or {})
-    props["compacted"] = True
-    return msg.model_copy(update={"additional_properties": props})
+    if mark:
+        props["compacted"] = True
+    return Message(
+        role=msg.role,
+        contents=msg.contents if contents is None else contents,
+        author_name=getattr(msg, "author_name", None),
+        message_id=getattr(msg, "message_id", None),
+        additional_properties=props,
+    )
+
+
+def _mark_compacted(msg: Message) -> Message:
+    return _rebuild(msg, mark=True)
 
 
 def _is_compacted(msg: Message) -> bool:
@@ -234,6 +267,13 @@ def _is_compacted(msg: Message) -> bool:
 def _text_msg(role: str, text: str, *, compacted: bool = False) -> Message:
     msg = Message(role=role, contents=[Content.from_text(text=text)])
     return _mark_compacted(msg) if compacted else msg
+
+
+def overflow_recoverable(*, attempts: int, enabled: bool,
+                         approvals_resolved: bool, exc: BaseException) -> bool:
+    """Gate for reactive overflow recovery (ADR-0004): recover only on a fresh
+    overflow, before any approval-gated action ran, once, and only when enabled."""
+    return attempts == 0 and enabled and not approvals_resolved and is_context_overflow(exc)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -369,7 +409,7 @@ class Compactor:
             removed += len(images)
             kept = [c for c in msg.contents if not _is_image_content(c)]
             kept.append(Content.from_text(text="[image removed]"))
-            out[i] = _mark_compacted(msg.model_copy(update={"contents": kept}))
+            out[i] = _rebuild(msg, contents=kept, mark=True)
         return out, removed
 
     async def compact(
@@ -439,6 +479,7 @@ async def test_level2_heuristic_folds_into_single_summary():
     assert _is_compacted(out[1])                  # the rolling summary
     summary_text = _extract_text(out[1])
     assert "old question 0" in summary_text and "old answer 3" in summary_text
+    assert "first answer" in summary_text          # leading orphan answer retained, not dropped
     assert res.summarized_turns == 4
     # recent window intact at the tail
     assert _extract_text(out[-1]) == "recent a 1"
@@ -482,6 +523,11 @@ In `llamatui/compaction.py`, add the two methods to `Compactor` and update `comp
         lines = [existing] if existing else []
         turns = 0
         i = 0
+        if region and region[0].role == "assistant":
+            # leading orphan answer (e.g. the first turn's reply, whose user is
+            # preserved separately at index 0) — keep it instead of dropping it.
+            lines.append(f"- (earlier reply): {_extract_text(region[0])[:cfg.summary_max_chars]}")
+            i = 1
         while i < len(region):
             msg = region[i]
             if msg.role != "user":
@@ -725,7 +771,7 @@ Add to `Compactor` in `llamatui/compaction.py`:
             removed += len(images)
             kept = [c for c in msg.contents if not _is_image_content(c)]
             kept.append(Content.from_text(text="[image removed]"))
-            out[i] = _mark_compacted(msg.model_copy(update={"contents": kept}))
+            out[i] = _rebuild(msg, contents=kept, mark=True)
         return out, removed
 
     async def compact_normal(self, messages, cfg):
@@ -1209,9 +1255,10 @@ from .compaction import CompactionConfig
                 for m in turns
             )
             msg = Message(role="user", contents=[Content.from_text(text=block)])
-            stream = agent.run([msg], session=agent.create_session(), stream=False)
-            resp = await stream.get_final_response()
-            return _extract_text(resp.messages[-1]) if resp.messages else ""
+            # stream=False → run(...) is awaitable and yields an AgentResponse with .text
+            # (there is NO .get_final_response() / .messages on this path).
+            resp = await agent.run([msg], session=agent.create_session(), stream=False)
+            return (resp.text or "").strip()
         except Exception:
             return ""
 
@@ -1290,17 +1337,17 @@ rtk git commit -m "feat(app): dedicated summarizer agent + proactive turn-bounda
 - Modify: `llamatui/app.py` (Serena `replace_symbol_body` on `generate`)
 
 **Interfaces:**
-- Consumes: `is_context_overflow` from `compaction.py`; `Conversation.compact_for_overflow`; `_compaction_config`.
+- Consumes: `overflow_recoverable` from `compaction.py` (Task 1); `Conversation.compact_for_overflow`; `_compaction_config`.
 - Produces: a bounded outer retry loop around the existing approval loop, gated on `not approvals_resolved` and a single attempt.
 
-**Design notes (apply exactly):** Wrap the existing `while True` approval loop in an **outer** retry `while True`. Track `approvals_resolved` (set `True` right after `_resolve_approvals`). On exception: if `attempts == 0 and cfg.enabled and not approvals_resolved and is_context_overflow(exc)`, run `compact_for_overflow`; if it changed anything, increment `attempts`, recreate the session, reset `pending`, refresh a `stream`/`view`, and `continue`. Otherwise fall through to the existing error handling.
+**Design notes (apply exactly):** Wrap the existing `while True` approval loop in an **outer** retry `while True`. Track `approvals_resolved` (set `True` right after `_resolve_approvals`). On exception: if `overflow_recoverable(attempts=attempts, enabled=cfg.enabled, approvals_resolved=approvals_resolved, exc=exc)` (the ADR-0004 gate from Task 1), run `compact_for_overflow`; if it changed anything, increment `attempts`, recreate the session, reset `pending`, refresh a `stream`/`view`, and `continue`. Otherwise fall through to the existing error handling.
 
 - [ ] **Step 1: Add the import**
 
 At the top of `app.py`, extend the compaction import:
 
 ```python
-from .compaction import CompactionConfig, is_context_overflow
+from .compaction import CompactionConfig, overflow_recoverable
 ```
 
 - [ ] **Step 2: Replace the run/except region of `generate()`**
@@ -1333,7 +1380,8 @@ Replace the block that currently reads (from `session = self.agent.create_sessio
             except Exception as exc:
                 view.reflect(stream.state, force=True)
                 cfg = self._compaction_config()
-                if attempts == 0 and cfg.enabled and not approvals_resolved and is_context_overflow(exc):
+                if overflow_recoverable(attempts=attempts, enabled=cfg.enabled,
+                                        approvals_resolved=approvals_resolved, exc=exc):
                     res = await self.conversation.compact_for_overflow(cfg)
                     if res.changed():
                         attempts += 1
