@@ -122,6 +122,7 @@ class LlamaTUI(App):
         Binding("ctrl+r", "dictate", "Dictate"),
         Binding("ctrl+g", "paste_image", "Grab image"),
         Binding("ctrl+shift+g", "clear_paste", "Clear image"),
+        Binding("ctrl+k", "compact_now", "Compact"),
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
@@ -445,6 +446,11 @@ class LlamaTUI(App):
             self.conversation.system_prompt = rest or None
             self._rebuild_agent()
             self._write_system(f"[dim](system prompt {'updated' if rest else 'cleared'})[/]")
+        elif cmd == "/compact":
+            if rest:
+                self._write_system("[dim](/compact takes no arguments — guided summarization not yet supported)[/]")
+            else:
+                self.run_worker(self.action_compact_now())
         else:
             self._write_system(f"[red]unknown command:[/] {cmd}  —  try [cyan]/help[/]")
 
@@ -734,3 +740,12 @@ class LlamaTUI(App):
     def action_clear_paste(self) -> None:
         self._staging.clear()
         self._render_paste_chips()
+
+    async def action_compact_now(self) -> None:
+        if self._busy:
+            self._write_system("[dim](busy — compaction deferred)[/]")
+            return
+        self._status("compacting…")
+        res = await self.conversation.compact_now(self._compaction_config())
+        self._write_system(res.note() if res.changed() else "[dim](nothing to compact)[/]")
+        self._status("ready")
