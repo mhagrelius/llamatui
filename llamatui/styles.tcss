@@ -143,41 +143,118 @@ SettingsScreen {
 }
 
 #settings-box {
-    width: 64;
+    width: 90%;
+    max-width: 70;
     height: auto;
+    max-height: 90%;
     padding: 1 2;
     background: $surface;
     border: round $primary;
 }
 
+/* Title echoes the sidebar's section-header bar ($boost + bold muted). */
 #settings-title {
-    text-style: bold;
+    height: 1;
     width: 100%;
+    text-style: bold;
+    color: $text-muted;
+    background: $boost;
     content-align: center middle;
     margin-bottom: 1;
 }
 
-#settings-box Input {
+/* The fields scroll if the panel outgrows a short terminal; title + buttons stay pinned.
+   overflow-y: scroll keeps the 1-col scrollbar gutter reserved at all times, so input widths
+   don't jump when it appears and the Save/Cancel row can clear that channel. */
+#settings-fields {
+    height: 1fr;
+    overflow-y: scroll;
+    scrollbar-size-vertical: 1;
+}
+
+/* Two-column form: a fixed-width label on the left, the control filling the row.
+   align-vertical centers the one-line label against the 3-high inputs. */
+.field-row {
+    height: auto;
+    align-vertical: middle;
     margin-bottom: 1;
 }
 
-#show-thinking-row {
-    height: auto;
-    margin-bottom: 1;
+/* Labels match the control height (3) so content-align can vertically center the text
+   against the input/switch — align-vertical on the row only moves the cluster, not each child. */
+.field-label {
+    width: 24;
+    height: 3;
+    content-align: left middle;
+    color: $text;
+}
+
+.field-input {
+    width: 1fr;
+}
+
+/* Voice mode: lay the radio buttons out horizontally and drop the group box border
+   so it reads as a plain inline control like the other rows. */
+.field-radio {
+    width: 1fr;
+    height: 3;
+    layout: horizontal;
+    align-vertical: middle;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+.field-radio RadioButton {
+    margin-right: 2;
+}
+
+/* Toggle rows: a 1fr label pushes the switch to the right edge. */
+.toggle-label {
+    width: 1fr;
+    height: 3;
+    content-align: left middle;
+    color: $text;
 }
 
 #settings-error {
     height: auto;
-    margin-bottom: 1;
+    color: $error;
 }
 
 #settings-buttons {
     height: auto;
     align-horizontal: right;
+    margin-top: 1;
 }
 
+/* Flat, borderless buttons to match the rest of the UI (solid bars, no half-block border that
+   reads as "cut off"). Explicit theme colors so each reads as a distinct button on $surface. */
 #settings-buttons Button {
+    height: 1;
+    min-width: 14;
+    border: none;
     margin-left: 2;
+    text-style: bold;
+}
+
+#settings-buttons #save {
+    background: $primary;
+    color: $text;
+}
+
+#settings-buttons #save:hover {
+    background: $primary 70%;
+}
+
+#settings-buttons #cancel {
+    background: $boost;
+    color: $text-muted;
+}
+
+#settings-buttons #cancel:hover {
+    background: $primary 25%;
+    color: $text;
 }
 
 /* ---- approval modal --------------------------------------------------- */
